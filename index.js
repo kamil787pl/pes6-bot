@@ -229,10 +229,10 @@ client.on("interactionCreate", async (interaction) => {
   }
 });
 
-// --- DM: wpisywanie wyniku ---
+// DM: wpisywanie wyniku
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
-  if (message.guild) return;
+  if (message.guild) return; // tylko DM
 
   const match = message.content.match(/^(\d+):(\d+)$/);
   if (!match) return;
@@ -243,25 +243,76 @@ client.on("messageCreate", async (message) => {
   if (!pendingKey)
     return message.channel.send("Nie znaleziono gracza do zatwierdzenia.");
 
+  // zapisujemy wynik
   pendingResults[pendingKey] = {
     scoreA: parseInt(match[1]),
     scoreB: parseInt(match[2]),
   };
 
-  const playerBId = pendingKey.split("_")[1];
-  const playerB = await client.users.fetch(playerBId);
+  const [playerA, playerB] = pendingKey.split("_");
 
   const row = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
-      .setCustomId(`confirm_${pendingKey}_${match[1]}_${match[2]}`)
+      .setCustomId(`confirm_${pendingKey}`)
       .setLabel("✅ Zatwierdź wynik")
       .setStyle(ButtonStyle.Success)
   );
 
-  playerB.send({
-    content: `📢 <@${message.author.id}> wpisał wynik: ${match[1]}:${match[2]}. Potwierdź wynik.`,
+  const playerBUser = await client.users.fetch(playerB);
+  playerBUser.send({
+    content: `📢 <@${playerA}> wpisał wynik: ${match[1]}:${match[2]}. Potwierdź wynik.`,
     components: [row],
   });
+
+  message.channel.send("✅ Wynik zapisany, czekaj aż przeciwnik potwierdzi.");
+});
+
+// InteractionCreate dla confirm
+client.on("interactionCreate", async (interaction) => {
+  if (!interaction.isButton()) return;
+
+  const [action, key] = interaction.customId.split("_");
+  if (action !== "confirm") return;
+
+  if (!pendingResults[key])
+    return interaction.reply({
+      content: "Błąd: brak wyniku.",
+      ephemeral: true,
+    });
+
+  const { scoreA, scoreB } = pendingResults[key];
+  const [playerA, playerB] = key.split("_");
+
+  if (interaction.user.id !== playerB) {
+    return interaction.reply({
+      content: "Nie możesz zatwierdzać wyniku za kogoś innego!",
+      ephemeral: true,
+    });
+  }
+
+  const diff = updateElo(playerA, playerB, scoreA, scoreB);
+  const matchRecord = {
+    playerA,
+    playerB,
+    scoreA,
+    scoreB,
+    date: new Date().toISOString(),
+  };
+  matches.push(matchRecord);
+  fs.writeFileSync(MATCH_FILE, JSON.stringify(matches, null, 2));
+  delete pendingResults[key];
+
+  await interaction.update({
+    content: `✅ Wynik zatwierdzony: <@${playerA}> ${scoreA}:${scoreB} <@${playerB}>`,
+    components: [],
+  });
+
+  const wynikiChannel = await client.channels.fetch(WYNIKI_CHANNEL_ID);
+  if (wynikiChannel) {
+    wynikiChannel.send(
+      `📢 <@${playerA}> ${scoreA}:${scoreB} <@${playerB}> — (${elo[playerA]} / ${elo[playerB]})`
+    );
+  }
 });
 
 // --- URUCHOMIENIE ---
