@@ -221,7 +221,6 @@ client.on("interactionCreate", async (interaction) => {
 
   const [action, playerAId, playerBId] = interaction.customId.split("_");
 
-  // Tylko gracz B może kliknąć
   if (interaction.user.id !== playerBId) {
     return interaction.reply({
       content: "Nie możesz akceptować/odrzucać wyzwania za kogoś innego!",
@@ -235,15 +234,14 @@ client.on("interactionCreate", async (interaction) => {
       components: [],
     });
 
-    // Prywatna wiadomość do gracza A, żeby wpisał wynik
     const userA = await client.users.fetch(playerAId);
-    userA.send(
-      `Wyzwanie zostało zaakceptowane przez <@${playerBId}>! Wpisz wynik w formacie: **Twoje_bramki:Przeciwnika_bramki**. Przykład: 3:1`
+    const dmChannel = await userA.createDM();
+    dmChannel.send(
+      `Wyzwanie zostało zaakceptowane przez <@${playerBId}>! Wpisz wynik w formacie: **Twoje_bramki:Przeciwnika_bramki**, np. 3:1`
     );
 
-    // Kolektor wiadomości w DM
     const filter = (m) => m.author.id === playerAId;
-    const collector = userA.dmChannel.createMessageCollector({
+    const collector = dmChannel.createMessageCollector({
       filter,
       time: 600000,
       max: 1,
@@ -251,9 +249,9 @@ client.on("interactionCreate", async (interaction) => {
 
     collector.on("collect", (msg) => {
       const scores = msg.content.split(":").map((n) => parseInt(n));
-      if (scores.length !== 2 || scores.some(isNaN)) {
+      if (scores.length !== 2 || scores.some(isNaN))
         return msg.channel.send("⚠️ Niepoprawny format. Użyj np. 3:1");
-      }
+
       const [scoreA, scoreB] = scores;
       const diff = updateElo(playerAId, playerBId, scoreA, scoreB);
 
@@ -305,5 +303,4 @@ client.on("interactionCreate", async (interaction) => {
   }
 });
 
-// Uruchomienie bota
 client.login(process.env.DISCORD_TOKEN);
