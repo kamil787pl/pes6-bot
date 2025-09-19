@@ -13,7 +13,9 @@ const client = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
+    GatewayIntentBits.DirectMessages,
   ],
+  partials: ["CHANNEL"], // potrzebne do DM
 });
 
 // Pliki danych
@@ -76,14 +78,14 @@ client.once("ready", () => {
   console.log(`✅ Zalogowano jako ${client.user.tag}`);
 });
 
-// Komendy
+// Komendy w kanale
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
   const args = message.content.split(" ");
 
   // !ping
   if (message.content === "!ping") {
-    message.channel.send("🏓 Pong!");
+    return message.channel.send("🏓 Pong!");
   }
 
   // !wyzwanie @gracz [klub/repr]
@@ -123,6 +125,15 @@ client.on("messageCreate", async (message) => {
       )
       .setColor(0x00aeff);
 
+    // Zapis wyzwania jako pending
+    matches.push({
+      playerA: message.author.id,
+      playerB: user.id,
+      accepted: false,
+      confirmed: false,
+    });
+    fs.writeFileSync(MATCH_FILE, JSON.stringify(matches, null, 2));
+
     const row = new ActionRowBuilder().addComponents(
       new ButtonBuilder()
         .setCustomId(`accept_${message.author.id}_${user.id}`)
@@ -149,68 +160,6 @@ client.on("messageCreate", async (message) => {
       .setColor(0xffd700);
     message.channel.send({ embeds: [embed] });
   }
-
-  // !historia
-  if (args[0] === "!historia") {
-    const last5 = matches
-      .slice(-5)
-      .reverse()
-      .map(
-        (m) =>
-          `<@${m.playerA}> ${m.scoreA}:${m.scoreB} <@${m.playerB}> (${new Date(
-            m.date
-          ).toLocaleDateString()})`
-      )
-      .join("\n");
-    const embed = new EmbedBuilder()
-      .setTitle("📜 Ostatnie mecze")
-      .setDescription(last5 || "Brak meczów")
-      .setColor(0x7289da);
-    message.channel.send({ embeds: [embed] });
-  }
-
-  // !profil [@gracz]
-  if (args[0] === "!profil") {
-    const target = message.mentions.users.first() || message.author;
-    const userMatches = matches.filter(
-      (m) => m.playerA === target.id || m.playerB === target.id
-    );
-    const total = userMatches.length;
-    let wins = 0,
-      draws = 0,
-      losses = 0;
-    for (const m of userMatches) {
-      let my = m.playerA === target.id ? m.scoreA : m.scoreB;
-      let opp = m.playerA === target.id ? m.scoreB : m.scoreA;
-      if (my > opp) wins++;
-      else if (my === opp) draws++;
-      else losses++;
-    }
-    const last5 =
-      userMatches
-        .slice(-5)
-        .map((m) => {
-          let my = m.playerA === target.id ? m.scoreA : m.scoreB;
-          let opp = m.playerA === target.id ? m.scoreB : m.scoreA;
-          return my > opp ? "W" : my === opp ? "R" : "P";
-        })
-        .join(" ") || "brak";
-
-    const embed = new EmbedBuilder()
-      .setTitle(`📋 Profil gracza — ${target.username}`)
-      .setColor(0x00aeff)
-      .addFields(
-        { name: "ELO", value: `${elo[target.id] || 1000}`, inline: true },
-        { name: "Rozegrane mecze", value: `${total}`, inline: true },
-        {
-          name: "Bilans",
-          value: `✅ ${wins} 🤝 ${draws} ❌ ${losses}`,
-          inline: true,
-        },
-        { name: "Passa (ostatnie 5)", value: last5 }
-      );
-    message.channel.send({ embeds: [embed] });
-  }
 });
 
 // Obsługa przycisków
@@ -220,6 +169,7 @@ client.on("interactionCreate", async (interaction) => {
   const [action, playerAId, playerBId, scoreA, scoreB] =
     interaction.customId.split("_");
 
+  // Sprawdzenie kto może kliknąć
   if (
     (action === "accept" || action === "decline") &&
     interaction.user.id !== playerBId
@@ -232,16 +182,30 @@ client.on("interactionCreate", async (interaction) => {
 
   // Akceptacja wyzwania
   if (action === "accept") {
+    // Zaznacz wyzwanie jako zaakceptowane
+    const challenge = matches.find(
+      (m) => m.playerA === playerAId && m.playerB === playerBId && !m.accepted
+    );
+    if (challenge) challenge.accepted = true;
+    fs.writeFileSync(MATCH_FILE, JSON.stringify(matches, null, 2));
+
     await interaction.update({
       content: `🎮 Wyzwanie zaakceptowane przez <@${playerBId}>!`,
       components: [],
     });
+
+    // Wyślij DM do gracza A z prośbą o wynik
     const userA = await client.users.fetch(playerAId);
     userA.send("Wpisz wynik meczu w formacie: Twoje_bramki:Przeciwnika_bramki");
   }
 
   // Odrzucenie wyzwania
   if (action === "decline") {
+    matches = matches.filter(
+      (m) =>
+        !(m.playerA === playerAId && m.playerB === playerBId && !m.accepted)
+    );
+    fs.writeFileSync(MATCH_FILE, JSON.stringify(matches, null, 2));
     await interaction.update({
       content: `❌ Wyzwanie odrzucone przez <@${playerBId}>!`,
       components: [],
@@ -280,18 +244,50 @@ client.on("interactionCreate", async (interaction) => {
       );
     }
   }
+});
 
-  // Poprawa wyniku
-  if (action === "edit") {
-    const userA = await client.users.fetch(playerAId);
-    await interaction.update({
-      content: `✏️ Poprawka wyniku wysłana do <@${playerAId}>`,
-      components: [],
-    });
-    userA.send(
-      "Wpisz ponownie wynik meczu w formacie: Twoje_bramki:Przeciwnika_bramki"
+// DM: Gracz A wpisuje wynik
+client.on("messageCreate", async (message) => {
+  if (message.author.bot) return;
+  if (message.guild) return; // tylko DM
+
+  const match = message.content.match(/^(\d+):(\d+)$/);
+  if (!match) return;
+
+  const pendingChallenge = matches.find(
+    (m) => m.playerA === message.author.id && m.accepted && !m.confirmed
+  );
+  if (!pendingChallenge)
+    return message.channel.send(
+      "❌ Nie masz oczekującego wyzwania do wpisania wyniku."
     );
-  }
+
+  pendingChallenge.scoreA = parseInt(match[1]);
+  pendingChallenge.scoreB = parseInt(match[2]);
+  pendingChallenge.confirmed = true;
+  fs.writeFileSync(MATCH_FILE, JSON.stringify(matches, null, 2));
+
+  // Wyślij przyciski do gracza B
+  const playerB = await client.users.fetch(pendingChallenge.playerB);
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(
+        `confirm_${pendingChallenge.playerA}_${pendingChallenge.playerB}_${pendingChallenge.scoreA}_${pendingChallenge.scoreB}`
+      )
+      .setLabel("✅ Zatwierdź wynik")
+      .setStyle(ButtonStyle.Success),
+    new ButtonBuilder()
+      .setCustomId(
+        `edit_${pendingChallenge.playerA}_${pendingChallenge.playerB}`
+      )
+      .setLabel("✏️ Popraw wynik")
+      .setStyle(ButtonStyle.Danger)
+  );
+
+  playerB.send({
+    content: `📢 <@${message.author.id}> wpisał wynik: ${match[1]}:${match[2]}. Potwierdź lub poproś o poprawkę.`,
+    components: [row],
+  });
 });
 
 // Uruchomienie bota
