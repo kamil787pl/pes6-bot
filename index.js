@@ -15,12 +15,12 @@ const client = new Client({
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.DirectMessages,
   ],
-  partials: ["CHANNEL"], // potrzebne do DM
+  partials: ["CHANNEL"],
 });
 
 // --- KONFIGURACJA ---
-const SERVER_ID = "TU_WSTAW_ID_SERWERA"; // ID Twojego serwera
-const WYNIKI_CHANNEL_ID = "TU_WSTAW_ID_KANAŁU_WYNIKI"; // ID kanału #wyniki
+const SERVER_ID = "496777968408854530";
+const WYNIKI_CHANNEL_ID = "1418222553524211752";
 
 // --- PLIKI DANYCH ---
 const ELO_FILE = "elo.json";
@@ -77,6 +77,9 @@ function updateElo(playerA, playerB, scoreA, scoreB) {
 // --- COOLDOWNS ---
 const cooldowns = {};
 
+// --- TEMP RESULTS ---
+const pendingResults = {}; // {playerAId_playerBId: {scoreA, scoreB}}
+
 // --- LOGOWANIE ---
 client.once("ready", () => {
   console.log(`✅ Zalogowano jako ${client.user.tag}`);
@@ -88,9 +91,7 @@ client.on("messageCreate", async (message) => {
   const args = message.content.split(" ");
 
   // !ping
-  if (message.content === "!ping") {
-    return message.channel.send("🏓 Pong!");
-  }
+  if (message.content === "!ping") return message.channel.send("🏓 Pong!");
 
   // !wyzwanie @gracz [klub/repr]
   if (args[0] === "!wyzwanie" && message.mentions.users.size === 1) {
@@ -129,15 +130,6 @@ client.on("messageCreate", async (message) => {
       )
       .setColor(0x00aeff);
 
-    // Zapis wyzwania jako pending
-    matches.push({
-      playerA: message.author.id,
-      playerB: user.id,
-      accepted: false,
-      confirmed: false,
-    });
-    fs.writeFileSync(MATCH_FILE, JSON.stringify(matches, null, 2));
-
     const row = new ActionRowBuilder().addComponents(
       new ButtonBuilder()
         .setCustomId(`accept_${message.author.id}_${user.id}`)
@@ -170,13 +162,12 @@ client.on("messageCreate", async (message) => {
 client.on("interactionCreate", async (interaction) => {
   if (!interaction.isButton()) return;
 
-  const [action, playerAId, playerBId, scoreA, scoreB] =
+  const [action, playerA, playerB, scoreA, scoreB] =
     interaction.customId.split("_");
 
-  // Sprawdzenie kto może kliknąć
   if (
     (action === "accept" || action === "decline") &&
-    interaction.user.id !== playerBId
+    interaction.user.id !== playerB
   ) {
     return interaction.reply({
       content: "Nie możesz akceptować/odrzucać wyzwania za kogoś innego!",
@@ -186,46 +177,31 @@ client.on("interactionCreate", async (interaction) => {
 
   // Akceptacja wyzwania
   if (action === "accept") {
-    const challenge = matches.find(
-      (m) => m.playerA === playerAId && m.playerB === playerBId && !m.accepted
-    );
-    if (challenge) challenge.accepted = true;
-    fs.writeFileSync(MATCH_FILE, JSON.stringify(matches, null, 2));
-
     await interaction.update({
-      content: `🎮 Wyzwanie zaakceptowane przez <@${playerBId}>!`,
+      content: `🎮 Wyzwanie zaakceptowane przez <@${playerB}>!`,
       components: [],
     });
-
-    // Wyślij DM do gracza A z prośbą o wynik
-    const userA = await client.users.fetch(playerAId);
+    const userA = await client.users.fetch(playerA);
     userA.send("Wpisz wynik meczu w formacie: Twoje_bramki:Przeciwnika_bramki");
   }
 
-  // Odrzucenie wyzwania
   if (action === "decline") {
-    matches = matches.filter(
-      (m) =>
-        !(m.playerA === playerAId && m.playerB === playerBId && !m.accepted)
-    );
-    fs.writeFileSync(MATCH_FILE, JSON.stringify(matches, null, 2));
     await interaction.update({
-      content: `❌ Wyzwanie odrzucone przez <@${playerBId}>!`,
+      content: `❌ Wyzwanie odrzucone przez <@${playerB}>!`,
       components: [],
     });
   }
 
-  // Zatwierdzenie wyniku przez gracza B
   if (action === "confirm") {
     const diff = updateElo(
-      playerAId,
-      playerBId,
+      playerA,
+      playerB,
       parseInt(scoreA),
       parseInt(scoreB)
     );
     const matchRecord = {
-      playerA: playerAId,
-      playerB: playerBId,
+      playerA,
+      playerB,
       scoreA: parseInt(scoreA),
       scoreB: parseInt(scoreB),
       date: new Date().toISOString(),
@@ -234,60 +210,51 @@ client.on("interactionCreate", async (interaction) => {
     fs.writeFileSync(MATCH_FILE, JSON.stringify(matches, null, 2));
 
     await interaction.update({
-      content: `✅ Wynik zatwierdzony: <@${playerAId}> ${scoreA}:${scoreB} <@${playerBId}>`,
+      content: `✅ Wynik zatwierdzony: <@${playerA}> ${scoreA}:${scoreB} <@${playerB}>`,
       components: [],
     });
 
-    // Wyślij wynik na kanał #wyniki
     const wynikiChannel = await client.channels.fetch(WYNIKI_CHANNEL_ID);
     if (wynikiChannel) {
       wynikiChannel.send(
-        `📢 <@${playerAId}> ${scoreA}:${scoreB} <@${playerBId}> — (${elo[playerAId]} / ${elo[playerBId]})`
+        `📢 <@${playerA}> ${scoreA}:${scoreB} <@${playerB}> — (${elo[playerA]} / ${elo[playerB]})`
       );
     }
   }
 });
 
-// --- DM: Gracz A wpisuje wynik ---
+// --- DM: wpisywanie wyniku ---
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
-  if (message.guild) return; // tylko DM
+  if (message.guild) return;
 
   const match = message.content.match(/^(\d+):(\d+)$/);
   if (!match) return;
 
-  const pendingChallenge = matches.find(
-    (m) => m.playerA === message.author.id && m.accepted && !m.confirmed
+  const pendingKey = Object.keys(pendingResults).find((k) =>
+    k.startsWith(message.author.id)
   );
-  if (!pendingChallenge)
-    return message.channel.send(
-      "❌ Nie masz oczekującego wyzwania do wpisania wyniku."
-    );
+  pendingResults[pendingKey] = {
+    scoreA: parseInt(match[1]),
+    scoreB: parseInt(match[2]),
+  };
 
-  pendingChallenge.scoreA = parseInt(match[1]);
-  pendingChallenge.scoreB = parseInt(match[2]);
-  pendingChallenge.confirmed = true;
-  fs.writeFileSync(MATCH_FILE, JSON.stringify(matches, null, 2));
+  const playerBId = pendingKey ? pendingKey.split("_")[1] : null;
+  if (!playerBId)
+    return message.channel.send("Nie znaleziono gracza do zatwierdzenia.");
 
-  // Wyślij przyciski do gracza B
-  const playerB = await client.users.fetch(pendingChallenge.playerB);
+  const playerB = await client.users.fetch(playerBId);
   const row = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId(
-        `confirm_${pendingChallenge.playerA}_${pendingChallenge.playerB}_${pendingChallenge.scoreA}_${pendingChallenge.scoreB}`
+        `confirm_${message.author.id}_${playerBId}_${match[1]}_${match[2]}`
       )
       .setLabel("✅ Zatwierdź wynik")
-      .setStyle(ButtonStyle.Success),
-    new ButtonBuilder()
-      .setCustomId(
-        `edit_${pendingChallenge.playerA}_${pendingChallenge.playerB}`
-      )
-      .setLabel("✏️ Popraw wynik")
-      .setStyle(ButtonStyle.Danger)
+      .setStyle(ButtonStyle.Success)
   );
 
   playerB.send({
-    content: `📢 <@${message.author.id}> wpisał wynik: ${match[1]}:${match[2]}. Potwierdź lub poproś o poprawkę.`,
+    content: `📢 <@${message.author.id}> wpisał wynik: ${match[1]}:${match[2]}. Potwierdź wynik.`,
     components: [row],
   });
 });
