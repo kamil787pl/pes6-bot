@@ -76,7 +76,7 @@ const pendingChallenges = {}; // key: playerA_playerB, value: {status: "pending"
 const pendingResults = {}; // key: playerA_playerB, value: {scoreA, scoreB}
 
 // Logowanie
-client.once("clientReady", () => {
+client.once("ready", () => {
   console.log(`✅ Zalogowano jako ${client.user.tag}`);
 });
 
@@ -114,7 +114,7 @@ client.on("messageCreate", async (message) => {
 
     try {
       await userB.send({
-        content: `🎯 <@${message.author.id}> rzucił Ci wyzwanie! Kliknij aby zaakceptować.`,
+        content: `🎯 <@${message.author.id}> rzucił Ci wyzwanie! Kliknij, aby zaakceptować.`,
         components: [row],
       });
       message.channel.send(`✅ Wyzwanie wysłane do <@${userB.id}>`);
@@ -162,62 +162,66 @@ client.on("messageCreate", async (message) => {
 // InteractionCreate dla przycisków
 client.on("interactionCreate", async (interaction) => {
   if (!interaction.isButton()) return;
-  const [action, key] = interaction.customId.split("_");
+
+  const [action, ...rest] = interaction.customId.split("_");
+  const key = rest.join("_");
 
   // Akceptacja wyzwania
   if (action === "accept") {
-    if (
-      !pendingChallenges[key] ||
-      pendingChallenges[key].status !== "pending"
-    ) {
+    const challenge = pendingChallenges[key];
+    if (!challenge || challenge.status !== "pending") {
       return interaction.reply({
         content: "❌ Wyzwanie już zaakceptowane lub nie istnieje.",
         ephemeral: true,
       });
     }
-    if (interaction.user.id !== key.split("_")[1]) {
+
+    const playerBId = key.split("_")[1];
+    if (interaction.user.id !== playerBId) {
       return interaction.reply({
-        content: "❌ Nie możesz akceptować tego wyzwania.",
+        content: "❌ Tylko zaproszony gracz może zaakceptować wyzwanie.",
         ephemeral: true,
       });
     }
 
-    pendingChallenges[key].status = "accepted";
-    interaction.update({
+    challenge.status = "accepted";
+    await interaction.update({
       content: "✅ Wyzwanie zaakceptowane! Gracz A wpisuje teraz wynik w DM.",
       components: [],
     });
 
+    // Powiadom gracza A w DM
     const playerAId = key.split("_")[0];
     const playerA = await client.users.fetch(playerAId);
-    playerA.send("🎯 Wpisz wynik meczu w formacie bramkiA:bramkiB np. 3:1");
+    playerA.send(
+      `🎯 Twoje wyzwanie zostało zaakceptowane! Wpisz wynik meczu w formacie bramkiA:bramkiB np. 2:1`
+    );
     return;
   }
 
   // Potwierdzenie wyniku
   if (action === "confirm") {
-    if (!pendingResults[key])
+    const result = pendingResults[key];
+    if (!result)
       return interaction.reply({
         content: "❌ Brak wyniku do zatwierdzenia.",
         ephemeral: true,
       });
 
-    const { scoreA, scoreB } = pendingResults[key];
-    const [playerA, playerB] = key.split("_");
-
-    if (interaction.user.id !== playerB) {
+    const [playerAId, playerBId] = key.split("_");
+    if (interaction.user.id !== playerBId) {
       return interaction.reply({
-        content: "❌ Nie możesz zatwierdzać wyniku za kogoś innego!",
+        content: "❌ Tylko gracz B może zatwierdzić wynik.",
         ephemeral: true,
       });
     }
 
-    const diff = updateElo(playerA, playerB, scoreA, scoreB);
+    const diff = updateElo(playerAId, playerBId, result.scoreA, result.scoreB);
     matches.push({
-      playerA,
-      playerB,
-      scoreA,
-      scoreB,
+      playerA: playerAId,
+      playerB: playerBId,
+      scoreA: result.scoreA,
+      scoreB: result.scoreB,
       date: new Date().toISOString(),
     });
     fs.writeFileSync(MATCH_FILE, JSON.stringify(matches, null, 2));
@@ -226,14 +230,14 @@ client.on("interactionCreate", async (interaction) => {
     delete pendingResults[key];
 
     await interaction.update({
-      content: `✅ Wynik zatwierdzony: <@${playerA}> ${scoreA}:${scoreB} <@${playerB}>`,
+      content: `✅ Wynik zatwierdzony: <@${playerAId}> ${result.scoreA}:${result.scoreB} <@${playerBId}>`,
       components: [],
     });
 
     const wynikiChannel = await client.channels.fetch(WYNIKI_CHANNEL_ID);
     if (wynikiChannel) {
       wynikiChannel.send(
-        `📢 <@${playerA}> ${scoreA}:${scoreB} <@${playerB}> — (${elo[playerA]} / ${elo[playerB]})`
+        `📢 <@${playerAId}> ${result.scoreA}:${result.scoreB} <@${playerBId}> — (${elo[playerAId]} / ${elo[playerBId]})`
       );
     }
   }
