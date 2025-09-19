@@ -66,7 +66,6 @@ function updateElo(playerA, playerB, scoreA, scoreB) {
   elo[playerB] = Math.round(elo[playerB] + K * (resultB - expectedB));
 
   fs.writeFileSync(ELO_FILE, JSON.stringify(elo, null, 2));
-
   return { a: elo[playerA] - oldA, b: elo[playerB] - oldB };
 }
 
@@ -133,7 +132,11 @@ client.on("messageCreate", async (message) => {
         .setStyle(ButtonStyle.Danger)
     );
 
-    message.channel.send({ embeds: [embed], components: [row] });
+    message.channel.send({
+      content: `<@${user.id}>, otrzymujesz wyzwanie od <@${message.author.id}>!`,
+      embeds: [embed],
+      components: [row],
+    });
   }
 
   // !ranking
@@ -212,12 +215,13 @@ client.on("messageCreate", async (message) => {
   }
 });
 
-// Obsługa kliknięć przycisków
+// Obsługa przycisków
 client.on("interactionCreate", async (interaction) => {
   if (!interaction.isButton()) return;
 
   const [action, playerAId, playerBId] = interaction.customId.split("_");
 
+  // Tylko gracz B może kliknąć
   if (interaction.user.id !== playerBId) {
     return interaction.reply({
       content: "Nie możesz akceptować/odrzucać wyzwania za kogoś innego!",
@@ -226,32 +230,31 @@ client.on("interactionCreate", async (interaction) => {
   }
 
   if (action === "accept") {
-    interaction.update({
-      content: `🎮 Wyzwanie zaakceptowane przez ${interaction.user.username}!`,
+    await interaction.update({
+      content: `🎮 Wyzwanie zaakceptowane przez <@${playerBId}>!`,
       components: [],
     });
 
-    // Po akceptacji prosimy gracza A o wpisanie wyniku
-    interaction.channel.send(
-      `<@${playerAId}>, wpisz wynik meczu w formacie: **Twoje_bramki:Przeciwnika_bramki**. Przykład: 3:1`
+    // Prywatna wiadomość do gracza A, żeby wpisał wynik
+    const userA = await client.users.fetch(playerAId);
+    userA.send(
+      `Wyzwanie zostało zaakceptowane przez <@${playerBId}>! Wpisz wynik w formacie: **Twoje_bramki:Przeciwnika_bramki**. Przykład: 3:1`
     );
 
+    // Kolektor wiadomości w DM
     const filter = (m) => m.author.id === playerAId;
-    const collector = interaction.channel.createMessageCollector({
+    const collector = userA.dmChannel.createMessageCollector({
       filter,
-      time: 60000,
+      time: 600000,
       max: 1,
     });
 
     collector.on("collect", (msg) => {
       const scores = msg.content.split(":").map((n) => parseInt(n));
       if (scores.length !== 2 || scores.some(isNaN)) {
-        return msg.channel.send(
-          "⚠️ Niepoprawny format. Użyj: **Twoje_bramki:Przeciwnika_bramki** np. 3:1"
-        );
+        return msg.channel.send("⚠️ Niepoprawny format. Użyj np. 3:1");
       }
       const [scoreA, scoreB] = scores;
-
       const diff = updateElo(playerAId, playerBId, scoreA, scoreB);
 
       const matchRecord = {
@@ -280,9 +283,10 @@ client.on("interactionCreate", async (interaction) => {
           }
         )
         .setColor(0x57f287);
+
       msg.channel.send({ embeds: [embed] });
 
-      const wynikiChannel = msg.guild.channels.cache.find(
+      const wynikiChannel = interaction.guild.channels.cache.find(
         (c) => c.name === "wyniki"
       );
       if (wynikiChannel) {
@@ -295,7 +299,7 @@ client.on("interactionCreate", async (interaction) => {
 
   if (action === "decline") {
     interaction.update({
-      content: `❌ Wyzwanie odrzucone przez ${interaction.user.username}!`,
+      content: `❌ Wyzwanie odrzucone przez <@${playerBId}>!`,
       components: [],
     });
   }
