@@ -72,11 +72,11 @@ function updateElo(playerA, playerB, scoreA, scoreB) {
 
 // Cooldowns i pending
 const cooldowns = {};
-const pendingChallenges = {}; // key: playerA_playerB, value: {status: "pending"|"accepted", type}
+const pendingChallenges = {}; // key: playerA_playerB, value: {status, type, teamA, teamB}
 const pendingResults = {}; // key: playerA_playerB, value: {scoreA, scoreB}
 
 // Logowanie
-client.once("ready", () => {
+client.once("clientReady", () => {
   console.log(`✅ Zalogowano jako ${client.user.tag}`);
 });
 
@@ -101,8 +101,27 @@ client.on("messageCreate", async (message) => {
 
     const userB = message.mentions.users.first();
     const type = args[2] ? args[2].toLowerCase() : "mix";
+
+    // Losowanie drużyn
+    let pool =
+      type === "klub"
+        ? CLUB_TEAMS
+        : type === "repr"
+        ? NATIONAL_TEAMS
+        : [...CLUB_TEAMS, ...NATIONAL_TEAMS];
+
+    const availableRatings = [...new Set(pool.map((t) => t.rating))];
+    const chosenRating =
+      availableRatings[Math.floor(Math.random() * availableRatings.length)];
+    const sameLevelTeams = pool.filter((t) => t.rating === chosenRating);
+
+    const teamA =
+      sameLevelTeams[Math.floor(Math.random() * sameLevelTeams.length)];
+    const teamB =
+      sameLevelTeams[Math.floor(Math.random() * sameLevelTeams.length)];
+
     const key = `${message.author.id}_${userB.id}`;
-    pendingChallenges[key] = { status: "pending", type };
+    pendingChallenges[key] = { status: "pending", type, teamA, teamB };
 
     // Powiadomienie gracza B
     const row = new ActionRowBuilder().addComponents(
@@ -114,7 +133,7 @@ client.on("messageCreate", async (message) => {
 
     try {
       await userB.send({
-        content: `🎯 <@${message.author.id}> rzucił Ci wyzwanie! Kliknij, aby zaakceptować.`,
+        content: `🎯 <@${message.author.id}> rzucił Ci wyzwanie!\nDrużyny:\n<@${message.author.id}> — ${teamA.name}\n<@${userB.id}> — ${teamB.name}\nKliknij aby zaakceptować.`,
         components: [row],
       });
       message.channel.send(`✅ Wyzwanie wysłane do <@${userB.id}>`);
@@ -125,6 +144,7 @@ client.on("messageCreate", async (message) => {
 
   // DM: wpisywanie wyniku
   if (!message.guild) {
+    // Szukamy wyzwań gdzie autor wiadomości jest playerA
     const pendingKey = Object.keys(pendingChallenges).find(
       (k) =>
         pendingChallenges[k].status === "accepted" &&
@@ -149,79 +169,84 @@ client.on("messageCreate", async (message) => {
         .setStyle(ButtonStyle.Success)
     );
 
-    playerBUser.send({
-      content: `📢 <@${message.author.id}> wpisał wynik: ${scoreA}:${scoreB}. Potwierdź wynik.`,
-      components: [row],
-    });
-    return message.channel.send(
-      "✅ Wynik wpisany. Czekaj na zatwierdzenie przez przeciwnika."
-    );
+    try {
+      await playerBUser.send({
+        content: `📢 <@${message.author.id}> wpisał wynik: ${scoreA}:${scoreB}. Potwierdź wynik.`,
+        components: [row],
+      });
+      return message.channel.send(
+        "✅ Wynik wpisany. Czekaj na zatwierdzenie przez przeciwnika."
+      );
+    } catch {
+      return message.channel.send(
+        "❌ Nie udało się wysłać wiadomości do gracza B."
+      );
+    }
   }
 });
 
 // InteractionCreate dla przycisków
 client.on("interactionCreate", async (interaction) => {
   if (!interaction.isButton()) return;
-
-  const [action, ...rest] = interaction.customId.split("_");
-  const key = rest.join("_");
+  const [action, key] = interaction.customId.split("_");
 
   // Akceptacja wyzwania
   if (action === "accept") {
-    const challenge = pendingChallenges[key];
-    if (!challenge || challenge.status !== "pending") {
+    if (
+      !pendingChallenges[key] ||
+      pendingChallenges[key].status !== "pending"
+    ) {
       return interaction.reply({
         content: "❌ Wyzwanie już zaakceptowane lub nie istnieje.",
         ephemeral: true,
       });
     }
-
-    const playerBId = key.split("_")[1];
-    if (interaction.user.id !== playerBId) {
+    if (interaction.user.id !== key.split("_")[1]) {
       return interaction.reply({
-        content: "❌ Tylko zaproszony gracz może zaakceptować wyzwanie.",
+        content: "❌ Nie możesz akceptować tego wyzwania.",
         ephemeral: true,
       });
     }
 
-    challenge.status = "accepted";
-    await interaction.update({
+    pendingChallenges[key].status = "accepted";
+    interaction.update({
       content: "✅ Wyzwanie zaakceptowane! Gracz A wpisuje teraz wynik w DM.",
       components: [],
     });
 
-    // Powiadom gracza A w DM
     const playerAId = key.split("_")[0];
     const playerA = await client.users.fetch(playerAId);
+    const { teamA, teamB } = pendingChallenges[key];
     playerA.send(
-      `🎯 Twoje wyzwanie zostało zaakceptowane! Wpisz wynik meczu w formacie bramkiA:bramkiB np. 2:1`
+      `🎯 Wyzwanie zaakceptowane przez <@${interaction.user.id}>!\nDrużyny:\n<@${playerAId}> — ${teamA.name}\n<@${interaction.user.id}> — ${teamB.name}\nWpisz wynik w formacie bramkiA:bramkiB np. 3:1`
     );
     return;
   }
 
   // Potwierdzenie wyniku
   if (action === "confirm") {
-    const result = pendingResults[key];
-    if (!result)
+    if (!pendingResults[key])
       return interaction.reply({
         content: "❌ Brak wyniku do zatwierdzenia.",
         ephemeral: true,
       });
 
-    const [playerAId, playerBId] = key.split("_");
-    if (interaction.user.id !== playerBId) {
+    const { scoreA, scoreB } = pendingResults[key];
+    const [playerA, playerB] = key.split("_");
+
+    if (interaction.user.id !== playerB) {
       return interaction.reply({
-        content: "❌ Tylko gracz B może zatwierdzić wynik.",
+        content: "❌ Nie możesz zatwierdzać wyniku za kogoś innego!",
         ephemeral: true,
       });
     }
 
-    const diff = updateElo(playerAId, playerBId, result.scoreA, result.scoreB);
+    const diff = updateElo(playerA, playerB, scoreA, scoreB);
     matches.push({
-      playerA: playerAId,
-      playerB: playerBId,
-      scoreA: result.scoreA,
-      scoreB: result.scoreB,
+      playerA,
+      playerB,
+      scoreA,
+      scoreB,
       date: new Date().toISOString(),
     });
     fs.writeFileSync(MATCH_FILE, JSON.stringify(matches, null, 2));
@@ -230,14 +255,14 @@ client.on("interactionCreate", async (interaction) => {
     delete pendingResults[key];
 
     await interaction.update({
-      content: `✅ Wynik zatwierdzony: <@${playerAId}> ${result.scoreA}:${result.scoreB} <@${playerBId}>`,
+      content: `✅ Wynik zatwierdzony: <@${playerA}> ${scoreA}:${scoreB} <@${playerB}>`,
       components: [],
     });
 
     const wynikiChannel = await client.channels.fetch(WYNIKI_CHANNEL_ID);
     if (wynikiChannel) {
       wynikiChannel.send(
-        `📢 <@${playerAId}> ${result.scoreA}:${result.scoreB} <@${playerBId}> — (${elo[playerAId]} / ${elo[playerBId]})`
+        `📢 <@${playerA}> ${scoreA}:${scoreB} <@${playerB}> — (${elo[playerA]} / ${elo[playerB]})`
       );
     }
   }
