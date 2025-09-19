@@ -8,7 +8,6 @@ const {
 } = require("discord.js");
 const fs = require("fs");
 
-// Konfiguracja
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -21,10 +20,10 @@ const client = new Client({
 const ELO_FILE = "elo.json";
 const MATCH_FILE = "matches.json";
 
-// ID kanału wyników
+// Kanał z wynikami
 const WYNIKI_CHANNEL_ID = "1418222553524211752";
 
-// Drużyny i ich rating
+// Drużyny
 const CLUB_TEAMS = [
   { name: "Real Madrid", rating: 5 },
   { name: "Barcelona", rating: 5 },
@@ -73,8 +72,8 @@ function updateElo(playerA, playerB, scoreA, scoreB) {
 
 // Cooldowns i pending
 const cooldowns = {};
+const pendingChallenges = {}; // key: playerA_playerB, value: {status: "pending"|"accepted", type}
 const pendingResults = {}; // key: playerA_playerB, value: {scoreA, scoreB}
-const userPendingMap = {}; // key: userId, value: pendingKey
 
 // Logowanie
 client.once("clientReady", () => {
@@ -87,11 +86,9 @@ client.on("messageCreate", async (message) => {
   const args = message.content.split(" ");
 
   // !ping
-  if (message.content === "!ping") {
-    return message.channel.send("🏓 Pong!");
-  }
+  if (message.content === "!ping") return message.channel.send("🏓 Pong!");
 
-  // !wyzwanie @gracz [klub/repr]
+  // !wyzwanie
   if (args[0] === "!wyzwanie" && message.mentions.users.size === 1) {
     const now = Date.now();
     const userId = message.author.id;
@@ -102,62 +99,48 @@ client.on("messageCreate", async (message) => {
     }
     cooldowns[userId] = now;
 
-    const user = message.mentions.users.first();
+    const userB = message.mentions.users.first();
     const type = args[2] ? args[2].toLowerCase() : "mix";
-    let pool =
-      type === "klub"
-        ? CLUB_TEAMS
-        : type === "repr"
-        ? NATIONAL_TEAMS
-        : [...CLUB_TEAMS, ...NATIONAL_TEAMS];
+    const key = `${message.author.id}_${userB.id}`;
+    pendingChallenges[key] = { status: "pending", type };
 
-    const availableRatings = [...new Set(pool.map((t) => t.rating))];
-    const chosenRating =
-      availableRatings[Math.floor(Math.random() * availableRatings.length)];
-    const sameLevelTeams = pool.filter((t) => t.rating === chosenRating);
+    // Powiadomienie gracza B
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`accept_${key}`)
+        .setLabel("✅ Akceptuj wyzwanie")
+        .setStyle(ButtonStyle.Success)
+    );
 
-    const team1 =
-      sameLevelTeams[Math.floor(Math.random() * sameLevelTeams.length)];
-    const team2 =
-      sameLevelTeams[Math.floor(Math.random() * sameLevelTeams.length)];
-
-    const embed = new EmbedBuilder()
-      .setTitle("🎲 Nowe wyzwanie!")
-      .setDescription(
-        `**${message.author.username}** (${team1.name}) vs **${user.username}** (${team2.name})\n⭐ Poziom siły: ${chosenRating}`
-      )
-      .setColor(0x00aeff);
-
-    message.channel.send({ embeds: [embed] });
-
-    // przygotowanie pendingResults
-    const key = `${message.author.id}_${user.id}`;
-    pendingResults[key] = {
-      scoreA: null,
-      scoreB: null,
-      initiatedBy: message.author.id,
-    };
-    userPendingMap[message.author.id] = key;
-    userPendingMap[user.id] = key;
-
-    // Powiadom DM gracza A
-    message.author.send(`🎯 Wpisz wynik w formacie bramkiA:bramkiB np. 3:1`);
+    try {
+      await userB.send({
+        content: `🎯 <@${message.author.id}> rzucił Ci wyzwanie! Kliknij aby zaakceptować.`,
+        components: [row],
+      });
+      message.channel.send(`✅ Wyzwanie wysłane do <@${userB.id}>`);
+    } catch (err) {
+      message.channel.send("❌ Nie udało się wysłać DM do gracza.");
+    }
   }
 
   // DM: wpisywanie wyniku
   if (!message.guild) {
-    const pendingKey = userPendingMap[message.author.id];
+    const pendingKey = Object.keys(pendingChallenges).find(
+      (k) =>
+        pendingChallenges[k].status === "accepted" &&
+        k.startsWith(message.author.id)
+    );
     if (!pendingKey) return;
+
     const match = message.content.match(/^(\d+):(\d+)$/);
     if (!match)
       return message.channel.send("⚠️ Użyj formatu bramkiA:bramkiB np. 2:1");
 
     const [scoreA, scoreB] = [parseInt(match[1]), parseInt(match[2])];
-    pendingResults[pendingKey].scoreA = scoreA;
-    pendingResults[pendingKey].scoreB = scoreB;
+    pendingResults[pendingKey] = { scoreA, scoreB };
 
-    const [playerA, playerB] = pendingKey.split("_");
-    const playerBUser = await client.users.fetch(playerB);
+    const playerBId = pendingKey.split("_")[1];
+    const playerBUser = await client.users.fetch(playerBId);
 
     const row = new ActionRowBuilder().addComponents(
       new ButtonBuilder()
@@ -167,66 +150,95 @@ client.on("messageCreate", async (message) => {
     );
 
     playerBUser.send({
-      content: `📢 <@${playerA}> wpisał wynik: ${scoreA}:${scoreB}. Potwierdź wynik.`,
+      content: `📢 <@${message.author.id}> wpisał wynik: ${scoreA}:${scoreB}. Potwierdź wynik.`,
       components: [row],
     });
     return message.channel.send(
-      "✅ Wynik zapisany. Czekaj aż przeciwnik potwierdzi."
+      "✅ Wynik wpisany. Czekaj na zatwierdzenie przez przeciwnika."
     );
   }
 });
 
-// InteractionCreate dla przycisku
+// InteractionCreate dla przycisków
 client.on("interactionCreate", async (interaction) => {
   if (!interaction.isButton()) return;
-
   const [action, key] = interaction.customId.split("_");
-  if (action !== "confirm") return;
 
-  if (!pendingResults[key])
-    return interaction.reply({
-      content: "Błąd: brak wyniku.",
-      ephemeral: true,
+  // Akceptacja wyzwania
+  if (action === "accept") {
+    if (
+      !pendingChallenges[key] ||
+      pendingChallenges[key].status !== "pending"
+    ) {
+      return interaction.reply({
+        content: "❌ Wyzwanie już zaakceptowane lub nie istnieje.",
+        ephemeral: true,
+      });
+    }
+    if (interaction.user.id !== key.split("_")[1]) {
+      return interaction.reply({
+        content: "❌ Nie możesz akceptować tego wyzwania.",
+        ephemeral: true,
+      });
+    }
+
+    pendingChallenges[key].status = "accepted";
+    interaction.update({
+      content: "✅ Wyzwanie zaakceptowane! Gracz A wpisuje teraz wynik w DM.",
+      components: [],
     });
 
-  const { scoreA, scoreB, initiatedBy } = pendingResults[key];
-  const [playerA, playerB] = key.split("_");
-
-  if (interaction.user.id !== playerB) {
-    return interaction.reply({
-      content: "Nie możesz zatwierdzać wyniku za kogoś innego!",
-      ephemeral: true,
-    });
+    const playerAId = key.split("_")[0];
+    const playerA = await client.users.fetch(playerAId);
+    playerA.send("🎯 Wpisz wynik meczu w formacie bramkiA:bramkiB np. 3:1");
+    return;
   }
 
-  const diff = updateElo(playerA, playerB, scoreA, scoreB);
-  const matchRecord = {
-    playerA,
-    playerB,
-    scoreA,
-    scoreB,
-    date: new Date().toISOString(),
-  };
-  matches.push(matchRecord);
-  fs.writeFileSync(MATCH_FILE, JSON.stringify(matches, null, 2));
+  // Potwierdzenie wyniku
+  if (action === "confirm") {
+    if (!pendingResults[key])
+      return interaction.reply({
+        content: "❌ Brak wyniku do zatwierdzenia.",
+        ephemeral: true,
+      });
 
-  delete pendingResults[key];
-  delete userPendingMap[playerA];
-  delete userPendingMap[playerB];
+    const { scoreA, scoreB } = pendingResults[key];
+    const [playerA, playerB] = key.split("_");
 
-  await interaction.update({
-    content: `✅ Wynik zatwierdzony: <@${playerA}> ${scoreA}:${scoreB} <@${playerB}>`,
-    components: [],
-  });
+    if (interaction.user.id !== playerB) {
+      return interaction.reply({
+        content: "❌ Nie możesz zatwierdzać wyniku za kogoś innego!",
+        ephemeral: true,
+      });
+    }
 
-  const wynikiChannel = await client.channels.fetch(WYNIKI_CHANNEL_ID);
-  if (wynikiChannel) {
-    wynikiChannel.send(
-      `📢 <@${playerA}> ${scoreA}:${scoreB} <@${playerB}> — (${elo[playerA]} / ${elo[playerB]})`
-    );
+    const diff = updateElo(playerA, playerB, scoreA, scoreB);
+    matches.push({
+      playerA,
+      playerB,
+      scoreA,
+      scoreB,
+      date: new Date().toISOString(),
+    });
+    fs.writeFileSync(MATCH_FILE, JSON.stringify(matches, null, 2));
+
+    delete pendingChallenges[key];
+    delete pendingResults[key];
+
+    await interaction.update({
+      content: `✅ Wynik zatwierdzony: <@${playerA}> ${scoreA}:${scoreB} <@${playerB}>`,
+      components: [],
+    });
+
+    const wynikiChannel = await client.channels.fetch(WYNIKI_CHANNEL_ID);
+    if (wynikiChannel) {
+      wynikiChannel.send(
+        `📢 <@${playerA}> ${scoreA}:${scoreB} <@${playerB}> — (${elo[playerA]} / ${elo[playerB]})`
+      );
+    }
   }
 });
 
-// Uruchomienie
+// Uruchomienie bota
 require("dotenv").config();
 client.login(process.env.DISCORD_TOKEN);
