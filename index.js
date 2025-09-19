@@ -77,8 +77,8 @@ function updateElo(playerA, playerB, scoreA, scoreB) {
 // --- COOLDOWNS ---
 const cooldowns = {};
 
-// --- TEMP RESULTS ---
-const pendingResults = {}; // {playerAId_playerBId: {scoreA, scoreB}}
+// --- PENDING RESULTS ---
+const pendingResults = {}; // { "playerA_playerB": { scoreA, scoreB } }
 
 // --- LOGOWANIE ---
 client.once("ready", () => {
@@ -175,7 +175,6 @@ client.on("interactionCreate", async (interaction) => {
     });
   }
 
-  // Akceptacja wyzwania
   if (action === "accept") {
     await interaction.update({
       content: `🎮 Wyzwanie zaakceptowane przez <@${playerB}>!`,
@@ -183,6 +182,9 @@ client.on("interactionCreate", async (interaction) => {
     });
     const userA = await client.users.fetch(playerA);
     userA.send("Wpisz wynik meczu w formacie: Twoje_bramki:Przeciwnika_bramki");
+
+    // Tworzymy pendingResults
+    pendingResults[`${playerA}_${playerB}`] = { scoreA: null, scoreB: null };
   }
 
   if (action === "decline") {
@@ -193,21 +195,25 @@ client.on("interactionCreate", async (interaction) => {
   }
 
   if (action === "confirm") {
-    const diff = updateElo(
-      playerA,
-      playerB,
-      parseInt(scoreA),
-      parseInt(scoreB)
-    );
+    const key = `${playerA}_${playerB}`;
+    const { scoreA, scoreB } = pendingResults[key];
+    if (scoreA === null || scoreB === null)
+      return interaction.reply({
+        content: "Błąd: brak wyniku.",
+        ephemeral: true,
+      });
+
+    const diff = updateElo(playerA, playerB, scoreA, scoreB);
     const matchRecord = {
       playerA,
       playerB,
-      scoreA: parseInt(scoreA),
-      scoreB: parseInt(scoreB),
+      scoreA,
+      scoreB,
       date: new Date().toISOString(),
     };
     matches.push(matchRecord);
     fs.writeFileSync(MATCH_FILE, JSON.stringify(matches, null, 2));
+    delete pendingResults[key];
 
     await interaction.update({
       content: `✅ Wynik zatwierdzony: <@${playerA}> ${scoreA}:${scoreB} <@${playerB}>`,
@@ -234,21 +240,20 @@ client.on("messageCreate", async (message) => {
   const pendingKey = Object.keys(pendingResults).find((k) =>
     k.startsWith(message.author.id)
   );
+  if (!pendingKey)
+    return message.channel.send("Nie znaleziono gracza do zatwierdzenia.");
+
   pendingResults[pendingKey] = {
     scoreA: parseInt(match[1]),
     scoreB: parseInt(match[2]),
   };
 
-  const playerBId = pendingKey ? pendingKey.split("_")[1] : null;
-  if (!playerBId)
-    return message.channel.send("Nie znaleziono gracza do zatwierdzenia.");
-
+  const playerBId = pendingKey.split("_")[1];
   const playerB = await client.users.fetch(playerBId);
+
   const row = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
-      .setCustomId(
-        `confirm_${message.author.id}_${playerBId}_${match[1]}_${match[2]}`
-      )
+      .setCustomId(`confirm_${pendingKey}_${match[1]}_${match[2]}`)
       .setLabel("✅ Zatwierdź wynik")
       .setStyle(ButtonStyle.Success)
   );
