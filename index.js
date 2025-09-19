@@ -1,5 +1,6 @@
 const { Client, GatewayIntentBits, EmbedBuilder } = require("discord.js");
 const fs = require("fs");
+require("dotenv").config();
 
 const client = new Client({
   intents: [
@@ -47,6 +48,7 @@ function updateElo(playerA, playerB, scoreA, scoreB) {
   if (!elo[playerB]) elo[playerB] = 1000;
 
   const expectedA = 1 / (1 + Math.pow(10, (elo[playerB] - elo[playerA]) / 400));
+  const expectedB = 1 / (1 + Math.pow(10, (elo[playerA] - elo[playerB]) / 400));
   const resultA = scoreA > scoreB ? 1 : scoreA === scoreB ? 0.5 : 0;
   const resultB = 1 - resultA;
 
@@ -119,19 +121,18 @@ client.on("messageCreate", (message) => {
     message.channel.send({ embeds: [embed] });
   }
 
-  // !wynik @gracz 3:1
-  if (args[0] === "!wynik" && message.mentions.users.size === 1 && args[2]) {
-    const user = message.mentions.users.first();
+  // !wynik @gracz 3:1 lub !wynik 3:1 (CPU)
+  if (args[0] === "!wynik" && args[2]) {
+    const opponent = message.mentions.users.first() || { id: "cpu", username: "CPU" };
     const [scoreA, scoreB] = args[2].split(":").map((n) => parseInt(n));
     if (isNaN(scoreA) || isNaN(scoreB))
       return message.channel.send("⚠️ Użycie: !wynik @gracz 3:1");
 
-    const diff = updateElo(message.author.id, user.id, scoreA, scoreB);
+    const diff = updateElo(message.author.id, opponent.id, scoreA, scoreB);
 
-    // Zapisz mecz
     const matchRecord = {
       playerA: message.author.id,
-      playerB: user.id,
+      playerB: opponent.id,
       scoreA,
       scoreB,
       date: new Date().toISOString(),
@@ -141,37 +142,18 @@ client.on("messageCreate", (message) => {
 
     const embed = new EmbedBuilder()
       .setTitle("✅ Wynik meczu zapisany")
-      .setDescription(
-        `**${message.author.username} ${scoreA}:${scoreB} ${user.username}**`
-      )
+      .setDescription(`**${message.author.username} ${scoreA}:${scoreB} ${opponent.username}**`)
       .addFields(
-        {
-          name: message.author.username,
-          value: `ELO: ${elo[message.author.id]} (${diff.a > 0 ? "+" : ""}${
-            diff.a
-          })`,
-          inline: true,
-        },
-        {
-          name: user.username,
-          value: `ELO: ${elo[user.id]} (${diff.b > 0 ? "+" : ""}${diff.b})`,
-          inline: true,
-        }
+        { name: message.author.username, value: `ELO: ${elo[message.author.id]} (${diff.a > 0 ? "+" : ""}${diff.a})`, inline: true },
+        { name: opponent.username, value: `ELO: ${elo[opponent.id]} (${diff.b > 0 ? "+" : ""}${diff.b})`, inline: true }
       )
       .setColor(0x57f287);
 
     message.channel.send({ embeds: [embed] });
 
-    // Wyślij do #wyniki
-    const wynikiChannel = message.guild.channels.cache.find(
-      (c) => c.name === "wyniki"
-    );
+    const wynikiChannel = message.guild.channels.cache.find(c => c.name === "wyniki");
     if (wynikiChannel) {
-      wynikiChannel.send(
-        `📢 ${message.author.username} ${scoreA}:${scoreB} ${
-          user.username
-        } — (${elo[message.author.id]} / ${elo[user.id]})`
-      );
+      wynikiChannel.send(`📢 ${message.author.username} ${scoreA}:${scoreB} ${opponent.username} — (${elo[message.author.id]} / ${elo[opponent.id]})`);
     }
   }
 
@@ -195,9 +177,7 @@ client.on("messageCreate", (message) => {
       .reverse()
       .map(
         (m) =>
-          `<@${m.playerA}> ${m.scoreA}:${m.scoreB} <@${m.playerB}> (${new Date(
-            m.date
-          ).toLocaleDateString()})`
+          `<@${m.playerA}> ${m.scoreA}:${m.scoreB} <@${m.playerB}> (${new Date(m.date).toLocaleDateString()})`
       )
       .join("\n");
     const embed = new EmbedBuilder()
@@ -252,5 +232,4 @@ client.on("messageCreate", (message) => {
 });
 
 // Uruchomienie bota
-require("dotenv").config();
-client.login(process.env.DISCORD_TOKEN);
+client.login(process.env
