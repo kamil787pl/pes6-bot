@@ -6,7 +6,6 @@ const {
 } = require("discord.js");
 const { pendingChallenges } = require("../state/pending");
 
-// Drużyny
 const CLUB_TEAMS = [
   { name: "Real Madrid", rating: 5 },
   { name: "Barcelona", rating: 5 },
@@ -33,22 +32,24 @@ module.exports = {
   cooldown: 5000,
   execute: async (message, args) => {
     if (message.mentions.users.size !== 1) return;
+    const userB = message.mentions.users.first();
+    const type = args[2] ? args[2].toLowerCase() : "mix";
+    const key = `${message.author.id}_${userB.id}`;
 
+    // Sprawdź cooldown
+    message.client.cooldowns = message.client.cooldowns || {};
     const now = Date.now();
     if (
-      message.client.cooldowns?.[message.author.id] &&
+      message.client.cooldowns[message.author.id] &&
       now - message.client.cooldowns[message.author.id] < 5000
     ) {
       return message.channel.send(
         "⏳ Odczekaj chwilę zanim wyzwiesz kolejnego gracza."
       );
     }
-    message.client.cooldowns = message.client.cooldowns || {};
     message.client.cooldowns[message.author.id] = now;
 
-    const userB = message.mentions.users.first();
-    const type = args[2] ? args[2].toLowerCase() : "mix";
-    const key = `${message.author.id}_${userB.id}`;
+    // Dodaj wyzwanie
     pendingChallenges[key] = { status: "pending", type };
 
     // Losowanie drużyn
@@ -62,23 +63,21 @@ module.exports = {
     const chosenRating =
       availableRatings[Math.floor(Math.random() * availableRatings.length)];
     const sameLevelTeams = pool.filter((t) => t.rating === chosenRating);
-
     const team1 =
       sameLevelTeams[Math.floor(Math.random() * sameLevelTeams.length)];
     const team2 =
       sameLevelTeams[Math.floor(Math.random() * sameLevelTeams.length)];
 
-    // Embed dla serwera
+    // Embed serwerowy
     const embed = new EmbedBuilder()
       .setTitle("🎲 Nowe wyzwanie!")
       .setDescription(
         `**${message.author.username}** (${team1.name}) vs **${userB.username}** (${team2.name})\n⭐ Poziom siły: ${chosenRating}`
       )
       .setColor(0x00aeff);
-
     message.channel.send({ embeds: [embed] });
 
-    // Przyciski DM do gracza B
+    // DM do gracza B
     const row = new ActionRowBuilder().addComponents(
       new ButtonBuilder()
         .setCustomId(`accept_${key}`)
@@ -92,7 +91,7 @@ module.exports = {
         components: [row],
       });
       message.channel.send(`✅ Wyzwanie wysłane do <@${userB.id}>`);
-    } catch (err) {
+    } catch {
       message.channel.send("❌ Nie udało się wysłać DM do gracza.");
     }
   },

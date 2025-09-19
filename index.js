@@ -1,5 +1,10 @@
 const fs = require("fs");
-const { Client, GatewayIntentBits, Collection } = require("discord.js");
+const {
+  Client,
+  GatewayIntentBits,
+  Collection,
+  InteractionType,
+} = require("discord.js");
 require("dotenv").config();
 
 const client = new Client({
@@ -10,24 +15,49 @@ const client = new Client({
   ],
 });
 
-// State do wyzwań i wyników
-client.pendingChallenges = {};
-client.pendingResults = {};
+// Modularne komendy
+client.commands = new Collection();
+const wyzwanieCommand = require("./commands/wyzwanie");
+const wynikCommand = require("./commands/wynik");
+client.commands.set(wyzwanieCommand.name, wyzwanieCommand);
+client.commands.set(wynikCommand.name, wynikCommand);
+
+// Cooldowns
 client.cooldowns = {};
 
-// Komendy
-client.commands = new Collection();
-const commandFiles = fs
-  .readdirSync("./commands")
-  .filter((f) => f.endsWith(".js"));
+// State globalny
+const { pendingChallenges, pendingResults } = require("./state/pending");
 
-for (const file of commandFiles) {
-  const command = require(`./commands/${file}`);
-  client.commands.set(command.name, command);
+// Kanał z wynikami
+const WYNIKI_CHANNEL_ID = "1418222553524211752";
+
+// Pliki ELO i mecze
+const ELO_FILE = "elo.json";
+const MATCH_FILE = "matches.json";
+
+let elo = fs.existsSync(ELO_FILE) ? JSON.parse(fs.readFileSync(ELO_FILE)) : {};
+let matches = fs.existsSync(MATCH_FILE)
+  ? JSON.parse(fs.readFileSync(MATCH_FILE))
+  : [];
+
+// Funkcja ELO
+function updateElo(playerA, playerB, scoreA, scoreB) {
+  const K = 30;
+  if (!elo[playerA]) elo[playerA] = 1000;
+  if (!elo[playerB]) elo[playerB] = 1000;
+  const expectedA = 1 / (1 + Math.pow(10, (elo[playerB] - elo[playerA]) / 400));
+  const resultA = scoreA > scoreB ? 1 : scoreA === scoreB ? 0.5 : 0;
+  const resultB = 1 - resultA;
+  const oldA = elo[playerA];
+  const oldB = elo[playerB];
+  elo[playerA] = Math.round(elo[playerA] + K * (resultA - expectedA));
+  elo[playerB] = Math.round(elo[playerB] + K * (resultB - expectedB));
+  fs.writeFileSync(ELO_FILE, JSON.stringify(elo, null, 2));
+  return { a: elo[playerA] - oldA, b: elo[playerB] - oldB };
 }
 
 // Logowanie
-client.once("clientReady", () => {
+client.once("ready", () => {
   console.log(`✅ Zalogowano jako ${client.user.tag}`);
 });
 
@@ -35,36 +65,35 @@ client.once("clientReady", () => {
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
 
-  // Jeśli DM i wpisanie wyniku
-  if (!message.guild && client.commands.has("wynik")) {
-    return client.commands.get("wynik").execute(message);
+  const args = message.content.split(" ");
+  const commandName = args[0].substring(1).toLowerCase();
+
+  // Komenda w DM do wpisywania wyniku
+  if (!message.guild) {
+    if (client.commands.has("wynik")) {
+      await client.commands.get("wynik").execute(message, args);
+    }
+    return;
   }
 
-  // Serwerowe komendy
-  const args = message.content.split(" ");
-  const cmd = args[0].slice(1).toLowerCase();
-
-  if (!message.content.startsWith("!") || !client.commands.has(cmd)) return;
-
-  try {
-    await client.commands.get(cmd).execute(message, args);
-  } catch (err) {
-    console.error(err);
-    message.channel.send("❌ Wystąpił błąd podczas wykonywania komendy.");
+  // Komendy serwerowe
+  if (!message.content.startsWith("!")) return;
+  if (client.commands.has(commandName)) {
+    await client.commands.get(commandName).execute(message, args);
   }
 });
 
 // Obsługa przycisków
 client.on("interactionCreate", async (interaction) => {
-  if (!interaction.isButton()) return;
+  if (interaction.type !== InteractionType.MessageComponent) return;
 
   const [action, key] = interaction.customId.split("_");
 
   // Akceptacja wyzwania
   if (action === "accept") {
     if (
-      !client.pendingChallenges[key] ||
-      client.pendingChallenges[key].status !== "pending"
+      !pendingChallenges[key] ||
+      pendingChallenges[key].status !== "pending"
     ) {
       return interaction.reply({
         content: "❌ Wyzwanie już zaakceptowane lub nie istnieje.",
@@ -78,25 +107,28 @@ client.on("interactionCreate", async (interaction) => {
       });
     }
 
-    client.pendingChallenges[key].status = "accepted";
-    interaction.update({
+    pendingChallenges[key].status = "accepted";
+    await interaction.update({
       content: "✅ Wyzwanie zaakceptowane! Gracz A wpisuje teraz wynik w DM.",
       components: [],
     });
 
-    const playerA = await client.users.fetch(key.split("_")[0]);
+    const playerAId = key.split("_")[0];
+    const playerA = await client.users.fetch(playerAId);
     playerA.send("🎯 Wpisz wynik meczu w formacie bramkiA:bramkiB np. 3:1");
+    return;
   }
 
   // Potwierdzenie wyniku
   if (action === "confirm") {
-    if (!client.pendingResults[key])
+    if (!pendingResults[key]) {
       return interaction.reply({
         content: "❌ Brak wyniku do zatwierdzenia.",
         ephemeral: true,
       });
+    }
 
-    const { scoreA, scoreB } = client.pendingResults[key];
+    const { scoreA, scoreB } = pendingResults[key];
     const [playerA, playerB] = key.split("_");
 
     if (interaction.user.id !== playerB) {
@@ -106,27 +138,29 @@ client.on("interactionCreate", async (interaction) => {
       });
     }
 
-    // Zaktualizuj ELO
-    const { updateElo } = require("./utils/elo");
     const diff = updateElo(playerA, playerB, scoreA, scoreB);
+    matches.push({
+      playerA,
+      playerB,
+      scoreA,
+      scoreB,
+      date: new Date().toISOString(),
+    });
+    fs.writeFileSync(MATCH_FILE, JSON.stringify(matches, null, 2));
 
-    // Zapisz mecz
-    const { saveMatch } = require("./utils/matches");
-    saveMatch(playerA, playerB, scoreA, scoreB);
-
-    delete client.pendingChallenges[key];
-    delete client.pendingResults[key];
+    delete pendingChallenges[key];
+    delete pendingResults[key];
 
     await interaction.update({
       content: `✅ Wynik zatwierdzony: <@${playerA}> ${scoreA}:${scoreB} <@${playerB}>`,
       components: [],
     });
 
-    // Wyślij wynik na kanał
-    const WYNIKI_CHANNEL_ID = "1418222553524211752";
     const wynikiChannel = await client.channels.fetch(WYNIKI_CHANNEL_ID);
     if (wynikiChannel) {
-      wynikiChannel.send(`📢 <@${playerA}> ${scoreA}:${scoreB} <@${playerB}>`);
+      wynikiChannel.send(
+        `📢 <@${playerA}> ${scoreA}:${scoreB} <@${playerB}> — (${elo[playerA]} / ${elo[playerB]})`
+      );
     }
   }
 });
