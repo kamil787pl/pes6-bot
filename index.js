@@ -18,11 +18,15 @@ const client = new Client({
   partials: ["CHANNEL"], // potrzebne do DM
 });
 
-// Pliki danych
+// --- KONFIGURACJA ---
+const SERVER_ID = "TU_WSTAW_ID_SERWERA"; // ID Twojego serwera
+const WYNIKI_CHANNEL_ID = "TU_WSTAW_ID_KANAŁU_WYNIKI"; // ID kanału #wyniki
+
+// --- PLIKI DANYCH ---
 const ELO_FILE = "elo.json";
 const MATCH_FILE = "matches.json";
 
-// Drużyny i ich rating
+// --- DRUŻYNY I ICH RATING ---
 const CLUB_TEAMS = [
   { name: "Real Madrid", rating: 5 },
   { name: "Barcelona", rating: 5 },
@@ -43,13 +47,13 @@ const NATIONAL_TEAMS = [
   { name: "Włochy", rating: 4 },
 ];
 
-// Wczytaj dane lub utwórz puste
+// --- WCZYTAJ DANE ---
 let elo = fs.existsSync(ELO_FILE) ? JSON.parse(fs.readFileSync(ELO_FILE)) : {};
 let matches = fs.existsSync(MATCH_FILE)
   ? JSON.parse(fs.readFileSync(MATCH_FILE))
   : [];
 
-// Funkcja aktualizacji ELO
+// --- FUNKCJA ELO ---
 function updateElo(playerA, playerB, scoreA, scoreB) {
   const K = 30;
   if (!elo[playerA]) elo[playerA] = 1000;
@@ -70,15 +74,15 @@ function updateElo(playerA, playerB, scoreA, scoreB) {
   return { a: elo[playerA] - oldA, b: elo[playerB] - oldB };
 }
 
-// Cooldowns dla komend
+// --- COOLDOWNS ---
 const cooldowns = {};
 
-// Logowanie
+// --- LOGOWANIE ---
 client.once("ready", () => {
   console.log(`✅ Zalogowano jako ${client.user.tag}`);
 });
 
-// Komendy w kanale
+// --- KOMENDY ---
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
   const args = message.content.split(" ");
@@ -162,7 +166,7 @@ client.on("messageCreate", async (message) => {
   }
 });
 
-// Obsługa przycisków
+// --- OBSŁUGA PRZYCISKÓW ---
 client.on("interactionCreate", async (interaction) => {
   if (!interaction.isButton()) return;
 
@@ -182,7 +186,6 @@ client.on("interactionCreate", async (interaction) => {
 
   // Akceptacja wyzwania
   if (action === "accept") {
-    // Zaznacz wyzwanie jako zaakceptowane
     const challenge = matches.find(
       (m) => m.playerA === playerAId && m.playerB === playerBId && !m.accepted
     );
@@ -212,7 +215,7 @@ client.on("interactionCreate", async (interaction) => {
     });
   }
 
-  // Zatwierdzenie wyniku
+  // Zatwierdzenie wyniku przez gracza B
   if (action === "confirm") {
     const diff = updateElo(
       playerAId,
@@ -235,9 +238,8 @@ client.on("interactionCreate", async (interaction) => {
       components: [],
     });
 
-    const wynikiChannel = interaction.guild.channels.cache.find(
-      (c) => c.name === "wyniki"
-    );
+    // Wyślij wynik na kanał #wyniki
+    const wynikiChannel = await client.channels.fetch(WYNIKI_CHANNEL_ID);
     if (wynikiChannel) {
       wynikiChannel.send(
         `📢 <@${playerAId}> ${scoreA}:${scoreB} <@${playerBId}> — (${elo[playerAId]} / ${elo[playerBId]})`
@@ -246,7 +248,7 @@ client.on("interactionCreate", async (interaction) => {
   }
 });
 
-// DM: Gracz A wpisuje wynik
+// --- DM: Gracz A wpisuje wynik ---
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
   if (message.guild) return; // tylko DM
@@ -290,6 +292,6 @@ client.on("messageCreate", async (message) => {
   });
 });
 
-// Uruchomienie bota
+// --- URUCHOMIENIE ---
 require("dotenv").config();
 client.login(process.env.DISCORD_TOKEN);
