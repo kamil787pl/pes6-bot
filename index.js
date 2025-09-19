@@ -230,49 +230,17 @@ client.on("interactionCreate", async (interaction) => {
     });
   }
 
+  // Akceptacja wyzwania
   if (action === "accept") {
     await interaction.update({
       content: `🎮 Wyzwanie zaakceptowane przez <@${playerBId}>!`,
       components: [],
     });
-
-    // Poproś gracza A o wpisanie wyniku w kanale
-    const msgPrompt = await interaction.channel.send(
-      `<@${playerAId}>, wpisz wynik w formacie **Twoje_bramki:Przeciwnika_bramki**, np. 3:1`
-    );
-    const filter = (m) => m.author.id === playerAId;
-    const collector = interaction.channel.createMessageCollector({
-      filter,
-      time: 600000,
-      max: 1,
-    });
-
-    collector.on("collect", async (msg) => {
-      const scores = msg.content.split(":").map((n) => parseInt(n));
-      if (scores.length !== 2 || scores.some(isNaN))
-        return msg.channel.send("⚠️ Niepoprawny format. Użyj np. 3:1");
-
-      const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId(
-            `confirm_${playerAId}_${playerBId}_${scores[0]}_${scores[1]}`
-          )
-          .setLabel("✅ Zatwierdź")
-          .setStyle(ButtonStyle.Success),
-        new ButtonBuilder()
-          .setCustomId(`edit_${playerAId}_${playerBId}`)
-          .setLabel("✏️ Popraw")
-          .setStyle(ButtonStyle.Secondary)
-      );
-
-      await interaction.followUp({
-        content: `<@${playerBId}>, gracz <@${playerAId}> wpisał wynik: ${scores[0]}:${scores[1]}. Zatwierdź lub poproś o poprawkę.`,
-        components: [row],
-        ephemeral: true,
-      });
-    });
+    const userA = await client.users.fetch(playerAId);
+    userA.send("Wpisz wynik meczu w formacie: Twoje_bramki:Przeciwnika_bramki");
   }
 
+  // Odrzucenie wyzwania
   if (action === "decline") {
     await interaction.update({
       content: `❌ Wyzwanie odrzucone przez <@${playerBId}>!`,
@@ -315,10 +283,14 @@ client.on("interactionCreate", async (interaction) => {
 
   // Poprawa wyniku
   if (action === "edit") {
-    interaction.followUp({
-      content: `✏️ Poprawka wyniku wysłana do <@${playerAId}>. Wpisz ponownie w formacie: Twoje_bramki:Przeciwnika_bramki`,
-      ephemeral: true,
+    const userA = await client.users.fetch(playerAId);
+    await interaction.update({
+      content: `✏️ Poprawka wyniku wysłana do <@${playerAId}>`,
+      components: [],
     });
+    userA.send(
+      "Wpisz ponownie wynik meczu w formacie: Twoje_bramki:Przeciwnika_bramki"
+    );
   }
 });
 
