@@ -7,7 +7,6 @@ const {
   ButtonStyle,
 } = require("discord.js");
 const fs = require("fs");
-require("dotenv").config();
 
 const client = new Client({
   intents: [
@@ -21,7 +20,7 @@ const client = new Client({
 const ELO_FILE = "elo.json";
 const MATCH_FILE = "matches.json";
 
-// Drużyny
+// Drużyny i ich rating
 const CLUB_TEAMS = [
   { name: "Real Madrid", rating: 5 },
   { name: "Barcelona", rating: 5 },
@@ -62,13 +61,14 @@ function updateElo(playerA, playerB, scoreA, scoreB) {
   const oldB = elo[playerB];
 
   elo[playerA] = Math.round(elo[playerA] + K * (resultA - expectedA));
-  elo[playerB] = Math.round(elo[playerB] + K * (resultB - (1 - expectedA)));
+  elo[playerB] = Math.round(elo[playerB] + K * (resultB - expectedB));
 
   fs.writeFileSync(ELO_FILE, JSON.stringify(elo, null, 2));
+
   return { a: elo[playerA] - oldA, b: elo[playerB] - oldB };
 }
 
-// Cooldowns
+// Cooldowns dla komend
 const cooldowns = {};
 
 // Logowanie
@@ -82,16 +82,19 @@ client.on("messageCreate", async (message) => {
   const args = message.content.split(" ");
 
   // !ping
-  if (message.content === "!ping") return message.channel.send("🏓 Pong!");
+  if (message.content === "!ping") {
+    message.channel.send("🏓 Pong!");
+  }
 
   // !wyzwanie @gracz [klub/repr]
   if (args[0] === "!wyzwanie" && message.mentions.users.size === 1) {
     const now = Date.now();
     const userId = message.author.id;
-    if (cooldowns[userId] && now - cooldowns[userId] < 5000)
+    if (cooldowns[userId] && now - cooldowns[userId] < 5000) {
       return message.channel.send(
         "⏳ Odczekaj chwilę zanim wyzwiesz kolejnego gracza."
       );
+    }
     cooldowns[userId] = now;
 
     const user = message.mentions.users.first();
@@ -131,11 +134,7 @@ client.on("messageCreate", async (message) => {
         .setStyle(ButtonStyle.Danger)
     );
 
-    message.channel.send({
-      content: `<@${user.id}>, otrzymujesz wyzwanie od <@${message.author.id}>!`,
-      embeds: [embed],
-      components: [row],
-    });
+    message.channel.send({ embeds: [embed], components: [row] });
   }
 
   // !ranking
@@ -170,7 +169,7 @@ client.on("messageCreate", async (message) => {
     message.channel.send({ embeds: [embed] });
   }
 
-  // !profil
+  // !profil [@gracz]
   if (args[0] === "!profil") {
     const target = message.mentions.users.first() || message.author;
     const userMatches = matches.filter(
@@ -221,63 +220,64 @@ client.on("interactionCreate", async (interaction) => {
   const [action, playerAId, playerBId, scoreA, scoreB] =
     interaction.customId.split("_");
 
-  if (action === "accept" || action === "decline") {
-    if (interaction.user.id !== playerBId)
-      return interaction.reply({
-        content: "Nie możesz akceptować/odrzucać wyzwania za kogoś innego!",
-        ephemeral: true,
-      });
+  if (
+    (action === "accept" || action === "decline") &&
+    interaction.user.id !== playerBId
+  ) {
+    return interaction.reply({
+      content: "Nie możesz akceptować/odrzucać wyzwania za kogoś innego!",
+      ephemeral: true,
+    });
+  }
 
-    if (action === "accept") {
-      await interaction.update({
-        content: `🎮 Wyzwanie zaakceptowane przez <@${playerBId}>!`,
-        components: [],
-      });
+  if (action === "accept") {
+    await interaction.update({
+      content: `🎮 Wyzwanie zaakceptowane przez <@${playerBId}>!`,
+      components: [],
+    });
 
-      // Poproś gracza A o wynik w DM
-      const userA = await client.users.fetch(playerAId);
-      const dmChannel = await userA.createDM();
-      dmChannel.send(
-        `Wyzwanie zaakceptowane przez <@${playerBId}>! Wpisz wynik w formacie: **Twoje_bramki:Przeciwnika_bramki**, np. 3:1`
+    // Poproś gracza A o wpisanie wyniku w kanale
+    const msgPrompt = await interaction.channel.send(
+      `<@${playerAId}>, wpisz wynik w formacie **Twoje_bramki:Przeciwnika_bramki**, np. 3:1`
+    );
+    const filter = (m) => m.author.id === playerAId;
+    const collector = interaction.channel.createMessageCollector({
+      filter,
+      time: 600000,
+      max: 1,
+    });
+
+    collector.on("collect", async (msg) => {
+      const scores = msg.content.split(":").map((n) => parseInt(n));
+      if (scores.length !== 2 || scores.some(isNaN))
+        return msg.channel.send("⚠️ Niepoprawny format. Użyj np. 3:1");
+
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(
+            `confirm_${playerAId}_${playerBId}_${scores[0]}_${scores[1]}`
+          )
+          .setLabel("✅ Zatwierdź")
+          .setStyle(ButtonStyle.Success),
+        new ButtonBuilder()
+          .setCustomId(`edit_${playerAId}_${playerBId}`)
+          .setLabel("✏️ Popraw")
+          .setStyle(ButtonStyle.Secondary)
       );
 
-      const filter = (m) => m.author.id === playerAId;
-      const collector = dmChannel.createMessageCollector({
-        filter,
-        time: 600000,
-        max: 1,
+      await interaction.followUp({
+        content: `<@${playerBId}>, gracz <@${playerAId}> wpisał wynik: ${scores[0]}:${scores[1]}. Zatwierdź lub poproś o poprawkę.`,
+        components: [row],
+        ephemeral: true,
       });
+    });
+  }
 
-      collector.on("collect", async (msg) => {
-        const scores = msg.content.split(":").map((n) => parseInt(n));
-        if (scores.length !== 2 || scores.some(isNaN))
-          return msg.channel.send("⚠️ Niepoprawny format. Użyj np. 3:1");
-
-        // Wyślij do gracza B w DM do zatwierdzenia
-        const userB = await client.users.fetch(playerBId);
-        const row = new ActionRowBuilder().addComponents(
-          new ButtonBuilder()
-            .setCustomId(
-              `confirm_${playerAId}_${playerBId}_${scores[0]}_${scores[1]}`
-            )
-            .setLabel("✅ Zatwierdź")
-            .setStyle(ButtonStyle.Success),
-          new ButtonBuilder()
-            .setCustomId(`edit_${playerAId}_${playerBId}`)
-            .setLabel("✏️ Popraw")
-            .setStyle(ButtonStyle.Secondary)
-        );
-        userB.send({
-          content: `<@${playerAId}> wpisał wynik: ${scores[0]}:${scores[1]}. Zatwierdź lub poproś o poprawkę.`,
-          components: [row],
-        });
-      });
-    } else {
-      await interaction.update({
-        content: `❌ Wyzwanie odrzucone przez <@${playerBId}>!`,
-        components: [],
-      });
-    }
+  if (action === "decline") {
+    await interaction.update({
+      content: `❌ Wyzwanie odrzucone przez <@${playerBId}>!`,
+      components: [],
+    });
   }
 
   // Zatwierdzenie wyniku
@@ -315,16 +315,13 @@ client.on("interactionCreate", async (interaction) => {
 
   // Poprawa wyniku
   if (action === "edit") {
-    const userA = await client.users.fetch(playerAId);
-    userA.send(
-      `Gracz <@${playerBId}> poprosił o poprawienie wyniku. Wpisz ponownie w formacie: Twoje_bramki:Przeciwnika_bramki`
-    );
-    await interaction.update({
-      content: `✏️ Poprawka wyniku wysłana do <@${playerAId}>.`,
-      components: [],
+    interaction.followUp({
+      content: `✏️ Poprawka wyniku wysłana do <@${playerAId}>. Wpisz ponownie w formacie: Twoje_bramki:Przeciwnika_bramki`,
+      ephemeral: true,
     });
   }
 });
 
 // Uruchomienie bota
+require("dotenv").config();
 client.login(process.env.DISCORD_TOKEN);
