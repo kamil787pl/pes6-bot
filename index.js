@@ -231,60 +231,75 @@ client.on("interactionCreate", async (interaction) => {
       components: [],
     });
 
-    // Po akceptacji możesz wysłać przyciski do wyboru wyniku
-    const scoreRow = new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId(`score_1_0_${playerAId}_${playerBId}`)
-        .setLabel("1:0")
-        .setStyle(ButtonStyle.Primary),
-      new ButtonBuilder()
-        .setCustomId(`score_2_0_${playerAId}_${playerBId}`)
-        .setLabel("2:0")
-        .setStyle(ButtonStyle.Primary),
-      new ButtonBuilder()
-        .setCustomId(`score_2_1_${playerAId}_${playerBId}`)
-        .setLabel("2:1")
-        .setStyle(ButtonStyle.Primary)
+    // Po akceptacji prosimy gracza A o wpisanie wyniku
+    interaction.channel.send(
+      `<@${playerAId}>, wpisz wynik meczu w formacie: **Twoje_bramki:Przeciwnika_bramki**. Przykład: 3:1`
     );
 
-    interaction.channel.send({
-      content: "Wybierz wynik meczu:",
-      components: [scoreRow],
+    const filter = (m) => m.author.id === playerAId;
+    const collector = interaction.channel.createMessageCollector({
+      filter,
+      time: 60000,
+      max: 1,
     });
-  } else if (action === "decline") {
+
+    collector.on("collect", (msg) => {
+      const scores = msg.content.split(":").map((n) => parseInt(n));
+      if (scores.length !== 2 || scores.some(isNaN)) {
+        return msg.channel.send(
+          "⚠️ Niepoprawny format. Użyj: **Twoje_bramki:Przeciwnika_bramki** np. 3:1"
+        );
+      }
+      const [scoreA, scoreB] = scores;
+
+      const diff = updateElo(playerAId, playerBId, scoreA, scoreB);
+
+      const matchRecord = {
+        playerA: playerAId,
+        playerB: playerBId,
+        scoreA,
+        scoreB,
+        date: new Date().toISOString(),
+      };
+      matches.push(matchRecord);
+      fs.writeFileSync(MATCH_FILE, JSON.stringify(matches, null, 2));
+
+      const embed = new EmbedBuilder()
+        .setTitle("✅ Wynik meczu zapisany")
+        .setDescription(`<@${playerAId}> ${scoreA}:${scoreB} <@${playerBId}>`)
+        .addFields(
+          {
+            name: `<@${playerAId}>`,
+            value: `ELO: ${elo[playerAId]} (${diff.a > 0 ? "+" : ""}${diff.a})`,
+            inline: true,
+          },
+          {
+            name: `<@${playerBId}>`,
+            value: `ELO: ${elo[playerBId]} (${diff.b > 0 ? "+" : ""}${diff.b})`,
+            inline: true,
+          }
+        )
+        .setColor(0x57f287);
+      msg.channel.send({ embeds: [embed] });
+
+      const wynikiChannel = msg.guild.channels.cache.find(
+        (c) => c.name === "wyniki"
+      );
+      if (wynikiChannel) {
+        wynikiChannel.send(
+          `📢 <@${playerAId}> ${scoreA}:${scoreB} <@${playerBId}> — (${elo[playerAId]} / ${elo[playerBId]})`
+        );
+      }
+    });
+  }
+
+  if (action === "decline") {
     interaction.update({
       content: `❌ Wyzwanie odrzucone przez ${interaction.user.username}!`,
       components: [],
     });
   }
-
-  // Obsługa kliknięcia wyniku
-  if (action === "score") {
-    const [scoreA, scoreB, playerA, playerB] = interaction.customId
-      .split("_")
-      .slice(1);
-    const diff = updateElo(
-      playerA,
-      playerB,
-      parseInt(scoreA),
-      parseInt(scoreB)
-    );
-
-    const matchRecord = {
-      playerA,
-      playerB,
-      scoreA: parseInt(scoreA),
-      scoreB: parseInt(scoreB),
-      date: new Date().toISOString(),
-    };
-    matches.push(matchRecord);
-    fs.writeFileSync(MATCH_FILE, JSON.stringify(matches, null, 2));
-
-    interaction.update({
-      content: `✅ Wynik zapisany: <@${playerA}> ${scoreA}:${scoreB} <@${playerB}>`,
-      components: [],
-    });
-  }
 });
 
+// Uruchomienie bota
 client.login(process.env.DISCORD_TOKEN);
