@@ -55,7 +55,6 @@ function updateElo(playerA, playerB, scoreA, scoreB) {
   if (!elo[playerB]) elo[playerB] = 1000;
 
   const expectedA = 1 / (1 + Math.pow(10, (elo[playerB] - elo[playerA]) / 400));
-  const expectedB = 1 / (1 + Math.pow(10, (elo[playerA] - elo[playerB]) / 400));
   const resultA = scoreA > scoreB ? 1 : scoreA === scoreB ? 0.5 : 0;
   const resultB = 1 - resultA;
 
@@ -63,7 +62,7 @@ function updateElo(playerA, playerB, scoreA, scoreB) {
   const oldB = elo[playerB];
 
   elo[playerA] = Math.round(elo[playerA] + K * (resultA - expectedA));
-  elo[playerB] = Math.round(elo[playerB] + K * (resultB - expectedB));
+  elo[playerB] = Math.round(elo[playerB] + K * (resultB - (1 - expectedA)));
 
   fs.writeFileSync(ELO_FILE, JSON.stringify(elo, null, 2));
   return { a: elo[playerA] - oldA, b: elo[playerB] - oldB };
@@ -219,88 +218,113 @@ client.on("messageCreate", async (message) => {
 client.on("interactionCreate", async (interaction) => {
   if (!interaction.isButton()) return;
 
-  const [action, playerAId, playerBId] = interaction.customId.split("_");
+  const [action, playerAId, playerBId, scoreA, scoreB] =
+    interaction.customId.split("_");
 
-  if (interaction.user.id !== playerBId) {
-    return interaction.reply({
-      content: "Nie możesz akceptować/odrzucać wyzwania za kogoś innego!",
-      ephemeral: true,
-    });
+  if (action === "accept" || action === "decline") {
+    if (interaction.user.id !== playerBId)
+      return interaction.reply({
+        content: "Nie możesz akceptować/odrzucać wyzwania za kogoś innego!",
+        ephemeral: true,
+      });
+
+    if (action === "accept") {
+      await interaction.update({
+        content: `🎮 Wyzwanie zaakceptowane przez <@${playerBId}>!`,
+        components: [],
+      });
+
+      // Poproś gracza A o wynik w DM
+      const userA = await client.users.fetch(playerAId);
+      const dmChannel = await userA.createDM();
+      dmChannel.send(
+        `Wyzwanie zaakceptowane przez <@${playerBId}>! Wpisz wynik w formacie: **Twoje_bramki:Przeciwnika_bramki**, np. 3:1`
+      );
+
+      const filter = (m) => m.author.id === playerAId;
+      const collector = dmChannel.createMessageCollector({
+        filter,
+        time: 600000,
+        max: 1,
+      });
+
+      collector.on("collect", async (msg) => {
+        const scores = msg.content.split(":").map((n) => parseInt(n));
+        if (scores.length !== 2 || scores.some(isNaN))
+          return msg.channel.send("⚠️ Niepoprawny format. Użyj np. 3:1");
+
+        // Wyślij do gracza B w DM do zatwierdzenia
+        const userB = await client.users.fetch(playerBId);
+        const row = new ActionRowBuilder().addComponents(
+          new ButtonBuilder()
+            .setCustomId(
+              `confirm_${playerAId}_${playerBId}_${scores[0]}_${scores[1]}`
+            )
+            .setLabel("✅ Zatwierdź")
+            .setStyle(ButtonStyle.Success),
+          new ButtonBuilder()
+            .setCustomId(`edit_${playerAId}_${playerBId}`)
+            .setLabel("✏️ Popraw")
+            .setStyle(ButtonStyle.Secondary)
+        );
+        userB.send({
+          content: `<@${playerAId}> wpisał wynik: ${scores[0]}:${scores[1]}. Zatwierdź lub poproś o poprawkę.`,
+          components: [row],
+        });
+      });
+    } else {
+      await interaction.update({
+        content: `❌ Wyzwanie odrzucone przez <@${playerBId}>!`,
+        components: [],
+      });
+    }
   }
 
-  if (action === "accept") {
+  // Zatwierdzenie wyniku
+  if (action === "confirm") {
+    const diff = updateElo(
+      playerAId,
+      playerBId,
+      parseInt(scoreA),
+      parseInt(scoreB)
+    );
+    const matchRecord = {
+      playerA: playerAId,
+      playerB: playerBId,
+      scoreA: parseInt(scoreA),
+      scoreB: parseInt(scoreB),
+      date: new Date().toISOString(),
+    };
+    matches.push(matchRecord);
+    fs.writeFileSync(MATCH_FILE, JSON.stringify(matches, null, 2));
+
     await interaction.update({
-      content: `🎮 Wyzwanie zaakceptowane przez <@${playerBId}>!`,
+      content: `✅ Wynik zatwierdzony: <@${playerAId}> ${scoreA}:${scoreB} <@${playerBId}>`,
       components: [],
     });
 
-    const userA = await client.users.fetch(playerAId);
-    const dmChannel = await userA.createDM();
-    dmChannel.send(
-      `Wyzwanie zostało zaakceptowane przez <@${playerBId}>! Wpisz wynik w formacie: **Twoje_bramki:Przeciwnika_bramki**, np. 3:1`
+    const wynikiChannel = interaction.guild.channels.cache.find(
+      (c) => c.name === "wyniki"
     );
-
-    const filter = (m) => m.author.id === playerAId;
-    const collector = dmChannel.createMessageCollector({
-      filter,
-      time: 600000,
-      max: 1,
-    });
-
-    collector.on("collect", (msg) => {
-      const scores = msg.content.split(":").map((n) => parseInt(n));
-      if (scores.length !== 2 || scores.some(isNaN))
-        return msg.channel.send("⚠️ Niepoprawny format. Użyj np. 3:1");
-
-      const [scoreA, scoreB] = scores;
-      const diff = updateElo(playerAId, playerBId, scoreA, scoreB);
-
-      const matchRecord = {
-        playerA: playerAId,
-        playerB: playerBId,
-        scoreA,
-        scoreB,
-        date: new Date().toISOString(),
-      };
-      matches.push(matchRecord);
-      fs.writeFileSync(MATCH_FILE, JSON.stringify(matches, null, 2));
-
-      const embed = new EmbedBuilder()
-        .setTitle("✅ Wynik meczu zapisany")
-        .setDescription(`<@${playerAId}> ${scoreA}:${scoreB} <@${playerBId}>`)
-        .addFields(
-          {
-            name: `<@${playerAId}>`,
-            value: `ELO: ${elo[playerAId]} (${diff.a > 0 ? "+" : ""}${diff.a})`,
-            inline: true,
-          },
-          {
-            name: `<@${playerBId}>`,
-            value: `ELO: ${elo[playerBId]} (${diff.b > 0 ? "+" : ""}${diff.b})`,
-            inline: true,
-          }
-        )
-        .setColor(0x57f287);
-
-      msg.channel.send({ embeds: [embed] });
-
-      const wynikiChannel = interaction.guild.channels.cache.find(
-        (c) => c.name === "wyniki"
+    if (wynikiChannel) {
+      wynikiChannel.send(
+        `📢 <@${playerAId}> ${scoreA}:${scoreB} <@${playerBId}> — (${elo[playerAId]} / ${elo[playerBId]})`
       );
-      if (wynikiChannel) {
-        wynikiChannel.send(
-          `📢 <@${playerAId}> ${scoreA}:${scoreB} <@${playerBId}> — (${elo[playerAId]} / ${elo[playerBId]})`
-        );
-      }
-    });
+    }
   }
 
-  if (action === "decline") {
-    interaction.update({
-      content: `❌ Wyzwanie odrzucone przez <@${playerBId}>!`,
+  // Poprawa wyniku
+  if (action === "edit") {
+    const userA = await client.users.fetch(playerAId);
+    userA.send(
+      `Gracz <@${playerBId}> poprosił o poprawienie wyniku. Wpisz ponownie w formacie: Twoje_bramki:Przeciwnika_bramki`
+    );
+    await interaction.update({
+      content: `✏️ Poprawka wyniku wysłana do <@${playerAId}>.`,
       components: [],
     });
   }
 });
 
+// Uruchomienie bota
 client.login(process.env.DISCORD_TOKEN);
