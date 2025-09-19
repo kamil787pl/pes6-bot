@@ -1,0 +1,88 @@
+const {
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  EmbedBuilder,
+} = require("discord.js");
+const fs = require("fs");
+const { pendingChallenges, pendingResults } = require("../state/pending");
+
+const ELO_FILE = "elo.json";
+const MATCH_FILE = "matches.json";
+const WYNIKI_CHANNEL_ID = "1418222553524211752"; // Twój kanał z wynikami
+
+let elo = fs.existsSync(ELO_FILE) ? JSON.parse(fs.readFileSync(ELO_FILE)) : {};
+let matches = fs.existsSync(MATCH_FILE)
+  ? JSON.parse(fs.readFileSync(MATCH_FILE))
+  : [];
+
+function updateElo(playerA, playerB, scoreA, scoreB) {
+  const K = 30;
+  if (!elo[playerA]) elo[playerA] = 1000;
+  if (!elo[playerB]) elo[playerB] = 1000;
+
+  const expectedA = 1 / (1 + Math.pow(10, (elo[playerB] - elo[playerA]) / 400));
+  const resultA = scoreA > scoreB ? 1 : scoreA === scoreB ? 0.5 : 0;
+  const resultB = 1 - resultA;
+
+  const oldA = elo[playerA];
+  const oldB = elo[playerB];
+
+  elo[playerA] = Math.round(elo[playerA] + K * (resultA - expectedA));
+  elo[playerB] = Math.round(elo[playerB] + K * (resultB - expectedB));
+
+  fs.writeFileSync(ELO_FILE, JSON.stringify(elo, null, 2));
+  return { a: elo[playerA] - oldA, b: elo[playerB] - oldB };
+}
+
+module.exports = {
+  name: "wynik",
+  description: "Wpisuje wynik meczu i wysyła do zatwierdzenia",
+  execute: async (message, args, client) => {
+    // Sprawdzenie czy to DM
+    if (message.guild) return;
+
+    // Szukanie aktywnego wyzwania dla gracza A
+    const pendingKey = Object.keys(pendingChallenges).find(
+      (k) =>
+        pendingChallenges[k].status === "accepted" &&
+        k.startsWith(message.author.id)
+    );
+
+    if (!pendingKey)
+      return message.channel.send(
+        "❌ Brak aktywnego wyzwania do wpisania wyniku."
+      );
+
+    // Parsowanie wyniku
+    const match = message.content.match(/^(\d+):(\d+)$/);
+    if (!match)
+      return message.channel.send("⚠️ Użyj formatu bramkiA:bramkiB np. 2:1");
+
+    const [scoreA, scoreB] = [parseInt(match[1]), parseInt(match[2])];
+    pendingResults[pendingKey] = { scoreA, scoreB };
+
+    // Wyślij do gracza B
+    const playerBId = pendingKey.split("_")[1];
+    const playerBUser = await client.users.fetch(playerBId);
+
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`confirm_${pendingKey}`)
+        .setLabel("✅ Zatwierdź wynik")
+        .setStyle(ButtonStyle.Success)
+    );
+
+    try {
+      await playerBUser.send({
+        content: `📢 <@${message.author.id}> wpisał wynik: ${scoreA}:${scoreB}. Potwierdź wynik.`,
+        components: [row],
+      });
+      return message.channel.send(
+        "✅ Wynik wpisany. Czekaj na zatwierdzenie przez przeciwnika."
+      );
+    } catch (err) {
+      return message.channel.send("❌ Nie udało się wysłać DM do przeciwnika.");
+    }
+  },
+};
