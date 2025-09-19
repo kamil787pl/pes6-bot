@@ -1,5 +1,13 @@
-const { Client, GatewayIntentBits, EmbedBuilder } = require("discord.js");
+const {
+  Client,
+  GatewayIntentBits,
+  EmbedBuilder,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+} = require("discord.js");
 const fs = require("fs");
+require("dotenv").config();
 
 const client = new Client({
   intents: [
@@ -13,7 +21,7 @@ const client = new Client({
 const ELO_FILE = "elo.json";
 const MATCH_FILE = "matches.json";
 
-// Drużyny i ich rating
+// Drużyny
 const CLUB_TEAMS = [
   { name: "Real Madrid", rating: 5 },
   { name: "Barcelona", rating: 5 },
@@ -47,6 +55,7 @@ function updateElo(playerA, playerB, scoreA, scoreB) {
   if (!elo[playerB]) elo[playerB] = 1000;
 
   const expectedA = 1 / (1 + Math.pow(10, (elo[playerB] - elo[playerA]) / 400));
+  const expectedB = 1 / (1 + Math.pow(10, (elo[playerA] - elo[playerB]) / 400));
   const resultA = scoreA > scoreB ? 1 : scoreA === scoreB ? 0.5 : 0;
   const resultB = 1 - resultA;
 
@@ -61,7 +70,7 @@ function updateElo(playerA, playerB, scoreA, scoreB) {
   return { a: elo[playerA] - oldA, b: elo[playerB] - oldB };
 }
 
-// Cooldowns dla komend
+// Cooldowns
 const cooldowns = {};
 
 // Logowanie
@@ -70,24 +79,21 @@ client.once("ready", () => {
 });
 
 // Komendy
-client.on("messageCreate", (message) => {
+client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
   const args = message.content.split(" ");
 
   // !ping
-  if (message.content === "!ping") {
-    message.channel.send("🏓 Pong!");
-  }
+  if (message.content === "!ping") return message.channel.send("🏓 Pong!");
 
   // !wyzwanie @gracz [klub/repr]
   if (args[0] === "!wyzwanie" && message.mentions.users.size === 1) {
     const now = Date.now();
     const userId = message.author.id;
-    if (cooldowns[userId] && now - cooldowns[userId] < 5000) {
+    if (cooldowns[userId] && now - cooldowns[userId] < 5000)
       return message.channel.send(
         "⏳ Odczekaj chwilę zanim wyzwiesz kolejnego gracza."
       );
-    }
     cooldowns[userId] = now;
 
     const user = message.mentions.users.first();
@@ -116,63 +122,18 @@ client.on("messageCreate", (message) => {
       )
       .setColor(0x00aeff);
 
-    message.channel.send({ embeds: [embed] });
-  }
-
-  // !wynik @gracz 3:1
-  if (args[0] === "!wynik" && message.mentions.users.size === 1 && args[2]) {
-    const user = message.mentions.users.first();
-    const [scoreA, scoreB] = args[2].split(":").map((n) => parseInt(n));
-    if (isNaN(scoreA) || isNaN(scoreB))
-      return message.channel.send("⚠️ Użycie: !wynik @gracz 3:1");
-
-    const diff = updateElo(message.author.id, user.id, scoreA, scoreB);
-
-    // Zapisz mecz
-    const matchRecord = {
-      playerA: message.author.id,
-      playerB: user.id,
-      scoreA,
-      scoreB,
-      date: new Date().toISOString(),
-    };
-    matches.push(matchRecord);
-    fs.writeFileSync(MATCH_FILE, JSON.stringify(matches, null, 2));
-
-    const embed = new EmbedBuilder()
-      .setTitle("✅ Wynik meczu zapisany")
-      .setDescription(
-        `**${message.author.username} ${scoreA}:${scoreB} ${user.username}**`
-      )
-      .addFields(
-        {
-          name: message.author.username,
-          value: `ELO: ${elo[message.author.id]} (${diff.a > 0 ? "+" : ""}${
-            diff.a
-          })`,
-          inline: true,
-        },
-        {
-          name: user.username,
-          value: `ELO: ${elo[user.id]} (${diff.b > 0 ? "+" : ""}${diff.b})`,
-          inline: true,
-        }
-      )
-      .setColor(0x57f287);
-
-    message.channel.send({ embeds: [embed] });
-
-    // Wyślij do #wyniki
-    const wynikiChannel = message.guild.channels.cache.find(
-      (c) => c.name === "wyniki"
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`accept_${message.author.id}_${user.id}`)
+        .setLabel("✅ Akceptuj")
+        .setStyle(ButtonStyle.Success),
+      new ButtonBuilder()
+        .setCustomId(`decline_${message.author.id}_${user.id}`)
+        .setLabel("❌ Odrzuć")
+        .setStyle(ButtonStyle.Danger)
     );
-    if (wynikiChannel) {
-      wynikiChannel.send(
-        `📢 ${message.author.username} ${scoreA}:${scoreB} ${
-          user.username
-        } — (${elo[message.author.id]} / ${elo[user.id]})`
-      );
-    }
+
+    message.channel.send({ embeds: [embed], components: [row] });
   }
 
   // !ranking
@@ -207,7 +168,7 @@ client.on("messageCreate", (message) => {
     message.channel.send({ embeds: [embed] });
   }
 
-  // !profil [@gracz]
+  // !profil
   if (args[0] === "!profil") {
     const target = message.mentions.users.first() || message.author;
     const userMatches = matches.filter(
@@ -251,6 +212,79 @@ client.on("messageCreate", (message) => {
   }
 });
 
-// Uruchomienie bota
-require("dotenv").config();
+// Obsługa kliknięć przycisków
+client.on("interactionCreate", async (interaction) => {
+  if (!interaction.isButton()) return;
+
+  const [action, playerAId, playerBId] = interaction.customId.split("_");
+
+  if (interaction.user.id !== playerBId) {
+    return interaction.reply({
+      content: "Nie możesz akceptować/odrzucać wyzwania za kogoś innego!",
+      ephemeral: true,
+    });
+  }
+
+  if (action === "accept") {
+    interaction.update({
+      content: `🎮 Wyzwanie zaakceptowane przez ${interaction.user.username}!`,
+      components: [],
+    });
+
+    // Po akceptacji możesz wysłać przyciski do wyboru wyniku
+    const scoreRow = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`score_1_0_${playerAId}_${playerBId}`)
+        .setLabel("1:0")
+        .setStyle(ButtonStyle.Primary),
+      new ButtonBuilder()
+        .setCustomId(`score_2_0_${playerAId}_${playerBId}`)
+        .setLabel("2:0")
+        .setStyle(ButtonStyle.Primary),
+      new ButtonBuilder()
+        .setCustomId(`score_2_1_${playerAId}_${playerBId}`)
+        .setLabel("2:1")
+        .setStyle(ButtonStyle.Primary)
+    );
+
+    interaction.channel.send({
+      content: "Wybierz wynik meczu:",
+      components: [scoreRow],
+    });
+  } else if (action === "decline") {
+    interaction.update({
+      content: `❌ Wyzwanie odrzucone przez ${interaction.user.username}!`,
+      components: [],
+    });
+  }
+
+  // Obsługa kliknięcia wyniku
+  if (action === "score") {
+    const [scoreA, scoreB, playerA, playerB] = interaction.customId
+      .split("_")
+      .slice(1);
+    const diff = updateElo(
+      playerA,
+      playerB,
+      parseInt(scoreA),
+      parseInt(scoreB)
+    );
+
+    const matchRecord = {
+      playerA,
+      playerB,
+      scoreA: parseInt(scoreA),
+      scoreB: parseInt(scoreB),
+      date: new Date().toISOString(),
+    };
+    matches.push(matchRecord);
+    fs.writeFileSync(MATCH_FILE, JSON.stringify(matches, null, 2));
+
+    interaction.update({
+      content: `✅ Wynik zapisany: <@${playerA}> ${scoreA}:${scoreB} <@${playerB}>`,
+      components: [],
+    });
+  }
+});
+
 client.login(process.env.DISCORD_TOKEN);
